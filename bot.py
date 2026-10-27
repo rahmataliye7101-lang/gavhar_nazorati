@@ -69,9 +69,17 @@ def ensure_data():
     DATA.mkdir(parents=True, exist_ok=True)
     BACKUP.mkdir(exist_ok=True)
     if not TRANSH.exists():
-        shutil.copy(BASE / "seed" / "transhlar.json", TRANSH)
+        src = BASE / "seed_transhlar.json"
+        if src.exists():
+            shutil.copy(src, TRANSH)
+        else:  # бошланғич файл йўқ бўлса — бўш созлама (транш кейин mini app дан қўшилади)
+            TRANSH.write_text(json.dumps({"chegara_usd_gr": 0.3, "transhlar": []}, ensure_ascii=False, indent=2), encoding="utf-8")
     if not LEDGER.exists():
-        shutil.copy(BASE / "seed" / "ledger.csv", LEDGER)
+        src = BASE / "seed_ledger.csv"
+        if src.exists():
+            shutil.copy(src, LEDGER)
+        else:
+            nazorat.save_ledger(str(LEDGER), [])
 
 
 def load_cfg():

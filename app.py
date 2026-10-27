@@ -280,7 +280,7 @@ async def api_hisobot(request):
 
 
 async def index(request):
-    return web.FileResponse(BASE / "webapp" / "index.html", headers={"Cache-Control": "no-cache"})
+    return web.FileResponse(BASE / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 def make_web():
@@ -295,7 +295,7 @@ def make_web():
     app.router.add_post("/api/transh/yop", api_transh_yop)
     app.router.add_post("/api/chegara", api_chegara)
     app.router.add_post("/api/hisobot", api_hisobot)
-    app.router.add_static("/static", BASE / "webapp" / "static")
+    app.router.add_get("/static/chart.umd.min.js", lambda r: web.FileResponse(BASE / "chart.umd.min.js"))
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
     return app
 

@@ -1,3 +1,5 @@
+> **Ҳамма файл битта жойда (папкасиз)** — GitHub га «Add file → Upload files» орқали ҳаммасини бирданига ташланг.
+
 # Gavhar — тилло нарх назорати: Telegram Mini App (Railway)
 
 Бот Gavhar Gold zavod фактураларини текширади:
@@ -6,7 +8,7 @@
 - ҳар юкламадан кейин қисқа хулоса + Excel ҳисобот (Назорат, Транш, Хатоликлар, Приход, Кунлик, Нархлар) юборади;
 - такрорий фактурани иккинчи марта қўшмайди, `/bekor` билан охирги юкламани қайтаради.
 
-Бошланғич маълумот (`seed/`): 2 та транш (15.07 — 1 160 000 $, 130,88; 13.10 — 707 000 $, 134,81) ва 21–27 июль приходлари (273 қатор).
+Бошланғич маълумот (`seed_transhlar.json`, `seed_ledger.csv`): 2 та транш (15.07 — 1 160 000 $, 130,88; 13.10 — 707 000 $, 134,81) ва 21–27 июль приходлари (273 қатор).
 
 ## Railway га ўрнатиш (15 дақиқа)
 
@@ -56,9 +58,9 @@ fianit → Фианит; Занжирлар → Дорика; waks → Вакс;
 
 ## Файллар
 - `app.py` — асосий файл: mini app сервери (API) + бот
-- `webapp/index.html` — mini app интерфейси
+- `index.html` — mini app интерфейси, `chart.umd.min.js` — график кутубхонаси
 - `bot.py` — бот ёрдамчилари (фактура қабул қилиш, /bekor)
 - `nazorat.py` — ҳисоб (FIFO, нарх текшириш, Excel ҳисобот); алоҳида ҳам ишлайди:
-  `python nazorat.py --transh seed/transhlar.json --ledger seed/ledger.csv --out hisobot.xlsx faktura.xlsx`
-- `seed/` — бошланғич транш ва реестр (биринчи ишга тушганда `/data` га кўчирилади)
+  `python nazorat.py --transh seed_transhlar.json --ledger seed_ledger.csv --out hisobot.xlsx faktura.xlsx`
+- `seed_transhlar.json`, `seed_ledger.csv` — бошланғич транш ва реестр (биринчи ишга тушганда `/data` га кўчирилади)
 - Volume `/data` да: `transhlar.json`, `ledger.csv`, `backup/` (охирги 30 нусха)
