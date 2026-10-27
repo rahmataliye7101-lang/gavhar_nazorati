@@ -236,20 +236,68 @@ async def narxlar(update: Update, ctx):
     await send_long(update.message, "\n".join(L))
 
 
-@guard
-async def transh(update: Update, ctx):
-    p = parse_transh(update.message.text or "")
+async def confirm_transh(update: Update, ctx, p):
     cfg = load_cfg()
     errs, notes = check_transh(p, cfg)
     if errs:
-        return await update.message.reply_text("❌ " + "; ".join(errs) + "\n\nНамуна учун /start")
+        return await update.effective_message.reply_text("❌ " + "; ".join(errs) + "\n\nНамуна учун /start")
     ctx.user_data["pending_transh"] = p
     no = max((t["no"] for t in cfg["transhlar"]), default=0) + 1
     text = (f"Янги транш №{no}\nСана: {p['sana']}\nСумма: {p['summa']:,.0f} $\nБиржа 999: {p['birja']}\n\n" + "\n".join(notes)
             + "\n\nСақлайми?")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Сақлаш", callback_data="tr_ok"),
                                 InlineKeyboardButton("❌ Бекор", callback_data="tr_no")]])
-    await update.message.reply_text(text, reply_markup=kb)
+    await update.effective_message.reply_text(text, reply_markup=kb)
+
+
+async def transh_flow(update: Update, ctx, text):
+    """Матндан транш (пул + нархлар) ўқиш. Транш матни бўлмаса False қайтаради."""
+    p = parse_transh(text or "")
+    if not p["birja"] or len(p["narxlar"]) < 2:
+        return False
+    cfg = load_cfg()
+    dup = next((t for t in cfg["transhlar"] if t["sana"] == p["sana"] and abs(t["birja_999"] - p["birja"]) < 0.005), None)
+    if dup and not p["summa"]:
+        ctx.user_data["await_summa"] = p
+        await update.effective_message.reply_text(
+            f"ℹ️ Шу сана ва нархлар транш №{dup['no']} да бор ({dup['sana']}, {dup['summa_usd']:,.0f} $, биржа {dup['birja_999']}).\n"
+            "Шу нархда яна пул берган бўлсангиз — суммасини ёзинг (масалан: 150000), алоҳида транш бўлиб қўшилади.\n"
+            "Берилмаган бўлса — эътибор берманг.")
+        return True
+    if not p["summa"]:
+        ctx.user_data["await_summa"] = p
+        await update.effective_message.reply_text(
+            f"Сана {p['sana']}, биржа {p['birja']}, {len(p['narxlar'])} та тур нархи ўқилди.\n"
+            "Шу нархлар бўйича қанча пул берилди? Суммани ёзинг (масалан: 707000)")
+        return True
+    await confirm_transh(update, ctx, p)
+    return True
+
+
+@guard
+async def transh(update: Update, ctx):
+    if not await transh_flow(update, ctx, update.message.text):
+        await update.message.reply_text("❌ Транш матни ўқилмади. Намуна учун /start")
+
+
+@guard
+async def on_text(update: Update, ctx):
+    text = update.message.text or ""
+    aw = ctx.user_data.get("await_summa")
+    if aw:
+        m = re.fullmatch(r"\s*([\d\s.,]+)\s*(\$|доллар|доллор|usd)?\s*", text, re.I)
+        if m:
+            num = float(re.sub(r"[^\d.]", "", m.group(1).replace(",", "")) or 0)
+            if num >= 1000:
+                ctx.user_data.pop("await_summa", None)
+                aw["summa"] = num
+                return await confirm_transh(update, ctx, aw)
+    if await transh_flow(update, ctx, text):
+        return
+    await update.message.reply_text(
+        "Фактура Excel файлини ташланг — текшираман.\n"
+        "Янги пул берилган бўлса, санаси, биржа нархи ва тур нархларини ёзинг (кейин суммани сўрайман).\n"
+        "Ҳолат: /holat · Бекор: /bekor")
 
 
 async def transh_cb(update: Update, ctx):

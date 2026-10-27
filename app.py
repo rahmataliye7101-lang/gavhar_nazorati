@@ -315,14 +315,17 @@ async def start_cmd(update, ctx):
 
 def make_bot():
     from telegram import Update
-    from telegram.ext import Application, CommandHandler, MessageHandler, filters
+    from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler(["start", "help"], start_cmd))
     app.add_handler(CommandHandler("myid", B.myid))
     app.add_handler(CommandHandler("bekor", B.bekor))
     app.add_handler(CommandHandler("holat", B.holat))
     app.add_handler(CommandHandler("reestr", B.reestr))
+    app.add_handler(CommandHandler("transh", B.transh))
+    app.add_handler(CallbackQueryHandler(B.transh_cb, pattern="^tr_"))
     app.add_handler(MessageHandler(filters.Document.ALL, B.document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, B.on_text))
     app.add_error_handler(B.on_error)
     return app, Update
 
