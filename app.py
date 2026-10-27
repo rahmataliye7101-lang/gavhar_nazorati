@@ -310,7 +310,9 @@ async def start_cmd(update, ctx):
         "Gavhar — тилло нарх назорати.\n\n"
         "• Ҳолат, хатоликлар, траншлар — «Назоратни очиш» тугмаси ёки пастдаги «Назорат» менюси орқали.\n"
         "• Фактура — тизим экспортини (.xlsx) шу чатга ташланг, бот текшириб ҳисобот қайтаради.\n"
-        "• /bekor — охирги юкламани бекор қилиш.", reply_markup=kb)
+        "• Янги пул: Gavhar нарх хабарини forward қилинг, бот суммани сўрайди.\n"
+        "• /bekor — охирги юкламани бекор қилиш.\n"
+        "• /tozalash — базани тозалаш (нолдан бошлаш).", reply_markup=kb)
 
 
 def make_bot():
@@ -323,6 +325,8 @@ def make_bot():
     app.add_handler(CommandHandler("holat", B.holat))
     app.add_handler(CommandHandler("reestr", B.reestr))
     app.add_handler(CommandHandler("transh", B.transh))
+    app.add_handler(CommandHandler("tozalash", B.tozalash))
+    app.add_handler(CallbackQueryHandler(B.tozalash_cb, pattern="^rs_"))
     app.add_handler(CallbackQueryHandler(B.transh_cb, pattern="^tr_"))
     app.add_handler(MessageHandler(filters.Document.ALL, B.document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, B.on_text))

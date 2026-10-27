@@ -272,6 +272,11 @@ def compute(cfg, ledger):
             r.update(holat="⚠ грамм йўқ", hisob=None, hisob_1gr=None, fakt_1gr=None, farq_gr=None, farq=None, transh="")
             out.append(r)
             continue
+        if not tr:
+            r.update(holat="⚠ транш йўқ", hisob=None, hisob_1gr=None, fakt_1gr=None, farq_gr=None, farq=None,
+                     transh="", izoh="Аввал транш (пул ва нархлар) киритинг")
+            out.append(r)
+            continue
         if r["tur"].startswith("❓"):
             r["izoh"] = "Тур аниқланмади — Детский нормаси олинди"
         rem_g, cost, parts = g, 0.0, []
@@ -530,6 +535,12 @@ def run(transh_path, ledger_path, out_path, files=()):
     new_res = [r for r in rows if key(r) in new_keys]
     if files:
         L.append(f"📥 Янги қатор: {added} (такрорий ўтказилди: {dup}). Реестрда жами: {s['n']}")
+    if new_res and not cfg["transhlar"]:
+        L.append(f"🧾 Янги фактура: {len(new_res)} позиция, {sum(r['gramm'] for r in new_res):,.2f} гр, "
+                 f"{sum((r['summa'] or 0) for r in new_res):,.2f} $ — реестрга қўшилди.\n"
+                 "⚠ Ҳали транш (пул ва нархлар) киритилмаган, шунинг учун нарх текширилмади.\n"
+                 "Gavhar нарх хабарини шу ерга forward қилинг ва суммани ёзинг — кейин фактура автомат текширилади.")
+        new_res = []
     if new_res:
         nb = [r for r in new_res if r["holat"].startswith("⚠")]
         L.append(f"🧾 Янги фактура: {len(new_res)} позиция, {sum(r['gramm'] for r in new_res):,.2f} гр\n"

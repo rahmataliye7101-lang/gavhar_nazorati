@@ -59,6 +59,7 @@ HELP = (
     "/och 1 — ёпилган траншни қайта очиш\n"
     "/chegara 0.3 — рухсат этилган фарқ, $/гр\n"
     "/bekor — охирги юкланган фактурани бекор қилиш\n"
+    "/tozalash — базани тозалаш (нолдан бошлаш)\n"
     "/reestr — барча приход қаторлари (CSV)\n"
     "/myid — Telegram ID ингиз"
 )
@@ -94,6 +95,7 @@ def save_cfg(cfg):
 
 
 def backup(path: Path):
+    BACKUP.mkdir(parents=True, exist_ok=True)
     if path.exists():
         stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         shutil.copy(path, BACKUP / f"{path.stem}_{stamp}{path.suffix}")
@@ -413,6 +415,45 @@ async def document(update: Update, ctx):
             bk.unlink()  # ҳеч нарса қўшилмади — бекор қилиш нуқтаси ўзгармайди
         else:
             (DATA / "last_backup.txt").write_text(str(bk))
+
+
+@guard
+async def tozalash(update: Update, ctx):
+    cfg = load_cfg()
+    n_tr = len(cfg["transhlar"])
+    n_rows = len(nazorat.load_ledger(str(LEDGER)))
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Ҳаммасини ўчириш (транш + фактура)", callback_data="rs_all")],
+        [InlineKeyboardButton("🧾 Фақат фактураларни ўчириш", callback_data="rs_inv")],
+        [InlineKeyboardButton("❌ Бекор", callback_data="rs_no")]])
+    await update.message.reply_text(
+        f"Ҳозир базада: {n_tr} та транш, {n_rows} та фактура қатори.\n\n"
+        "Нимани ўчирай? (ўчиришдан олдин нусха сақланади)", reply_markup=kb)
+
+
+async def tozalash_cb(update: Update, ctx):
+    q = update.callback_query
+    if not allowed(update):
+        return await q.answer("Рухсат йўқ", show_alert=True)
+    await q.answer()
+    if q.data == "rs_no":
+        return await q.edit_message_text("Бекор қилинди. Ҳеч нарса ўчирилмади.")
+    async with LOCK:
+        backup(LEDGER)
+        nazorat.save_ledger(str(LEDGER), [])
+        if q.data == "rs_all":
+            cfg = load_cfg()
+            cfg["transhlar"] = []
+            save_cfg(cfg)  # save_cfg ўзи нусха олади
+        (DATA / "last_backup.txt").unlink(missing_ok=True)
+    if q.data == "rs_all":
+        await q.edit_message_text(
+            "✅ Ҳаммаси ўчирилди. База бўш.\n\n"
+            "Энди биринчи транш (пул) ни киритинг: Gavhar юборган нарх хабарини шу ерга forward қилинг "
+            "ва сўралганда суммани ёзинг (ёки mini app → Transhlar → «+ Yangi transh»).\n"
+            "Кейин фактураларни ташлайверасиз.")
+    else:
+        await q.edit_message_text("✅ Фактуралар ўчирилди, траншлар қолди. Фактураларни қайтадан ташлашингиз мумкин.")
 
 
 async def on_error(update, ctx):
