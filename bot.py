@@ -72,6 +72,12 @@ HELP = (
 
 
 # ---------------- ёрдамчи ----------------
+VOZVRAT_2 = {"no": 2, "sana": "2026-10-27", "summa_usd": 208422, "birja": 149.94,
+             "narxlar": {"Бриллиант": 99.52, "Вакс": 97.41, "Кузсиз": 97.41, "Дорика": 100.05, "Фианит": 95.82,
+                         "Браслет": 100.05, "Детский": 100.05, "Ван Клиф": 100.05},
+             "manba": "Фойдаланувчи 27.10.2026: қўшимча возврат 208 422 $, биржа 149.94"}
+
+
 def ensure_data():
     DATA.mkdir(parents=True, exist_ok=True)
     BACKUP.mkdir(exist_ok=True)
@@ -81,6 +87,10 @@ def ensure_data():
             shutil.copy(src, TRANSH)
         else:  # бошланғич файл йўқ бўлса — бўш созлама (транш кейин mini app дан қўшилади)
             TRANSH.write_text(json.dumps({"chegara_usd_gr": 0.3, "transhlar": []}, ensure_ascii=False, indent=2), encoding="utf-8")
+    cfg = json.loads(TRANSH.read_text(encoding="utf-8"))
+    if "vozvrat_qismlar" not in cfg:  # бир марталик: возврат 2-қисм (27.10.2026 да берилган)
+        cfg["vozvrat_qismlar"] = [dict(VOZVRAT_2)]
+        TRANSH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     if not LEDGER.exists():
         src = BASE / "seed_ledger.csv"
         if src.exists():
@@ -461,7 +471,7 @@ def parse_transh(text: str):
         nums = [float(x.replace(",", ".")) for x in re.findall(NUM, l.replace(" ", ""))]
         if not nums:
             continue
-        if "биржа" in low or "birja" in low or "999" in low and "нарх" in low:
+        if "биржа" in low or "birja" in low or "тилло нарх" in low or "tillo narx" in low or "999" in low and "нарх" in low:
             res["birja"] = nums[-1]
             continue
         if "лом" in low or "lom" in low:
@@ -547,6 +557,14 @@ async def confirm_transh(update: Update, ctx, p):
     if errs:
         return await update.effective_message.reply_text("❌ Тушунмадим: " + "; ".join(errs) + ".\nGavhar нарх хабарини тўлиқ forward қилинг.")
     ctx.user_data["pending_transh"] = p
+    if p.get("vozvrat"):
+        no = max((q["no"] for q in cfg.get("vozvrat_qismlar", [])), default=1) + 1
+        text = (f"↩️ Возврат {no}-қисм\n💵 {p['summa']:,.0f} $ · биржа {p['birja']}\n\n1 гр нархлари:\n"
+                + "\n".join(f"• {n}: {v:.2f} $" for n, v in p["narxlar"].items())
+                + "\n\nФактурада шу нархда келган товарлар (шу сумма тугагунча) возврат деб ҳисобланади.\nСақлайми?")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Сақлаш", callback_data="tr_ok"),
+                                    InlineKeyboardButton("❌ Бекор", callback_data="tr_no")]])
+        return await update.effective_message.reply_text(text, reply_markup=kb)
     no = max((t["no"] for t in cfg["transhlar"]), default=0) + 1
     sana = nazorat._dmy(p["sana"]) if p.get("sana") else "—"
     text = (f"💳 Янги транш №{no}\n📅 {sana} · 💵 {p['summa']:,.0f} $ · биржа {p['birja']}\n" + "\n".join(notes)
@@ -564,9 +582,12 @@ async def transh_flow(update: Update, ctx, text):
     if not has_perm(update.effective_user.id, "transh_qoshish"):
         await update.effective_message.reply_text(f"⛔ Сизда бу учун рухсат йўқ: {PERMS['transh_qoshish']}.")
         return True
+    p["vozvrat"] = bool(re.search(r"возв|возрат|vozvrat", text or "", re.I))
+    if p["vozvrat"] and not p["sana"]:
+        p["sana"] = dt.date.today().isoformat()
     cfg = load_cfg()
     dup = next((t for t in cfg["transhlar"] if t["sana"] == p["sana"] and abs(t["birja_999"] - p["birja"]) < 0.005), None)
-    if dup and not p["summa"]:
+    if dup and not p["summa"] and not p["vozvrat"]:
         ctx.user_data["await_summa"] = p
         await update.effective_message.reply_text(
             f"ℹ️ Бу нархлар олдин сақланган (Транш №{dup['no']}, {nazorat._dmy(dup['sana'])}, {dup['summa_usd']:,.0f} $).\n"
@@ -576,7 +597,7 @@ async def transh_flow(update: Update, ctx, text):
         ctx.user_data["await_summa"] = p
         await update.effective_message.reply_text(
             f"✅ Нархлар ўқилди ({nazorat._dmy(p['sana']) if p.get('sana') else '—'}, биржа {p['birja']}).\n"
-            "Қанча пул берилди? Суммани ёзинг (масалан: 707000)")
+            + ("Возврат суммаси қанча? Ёзинг (масалан: 208422)" if p.get("vozvrat") else "Қанча пул берилди? Суммани ёзинг (масалан: 707000)"))
         return True
     await confirm_transh(update, ctx, p)
     return True
@@ -629,6 +650,16 @@ async def transh_cb(update: Update, ctx):
     p = ctx.user_data.pop("pending_transh", None)
     if q.data == "tr_no" or not p:
         return await q.edit_message_text("Бекор қилинди.")
+    if p.get("vozvrat"):
+        async with LOCK:
+            cfg = load_cfg()
+            vq = cfg.setdefault("vozvrat_qismlar", [])
+            no = max((q["no"] for q in vq), default=1) + 1
+            vq.append({"no": no, "sana": dt.date.today().isoformat(), "summa_usd": p["summa"], "birja": p["birja"],
+                       "narxlar": p["narxlar"], "manba": f"Telegram бот, {dt.date.today()}"})
+            save_cfg(cfg)
+        await q.edit_message_text(q.message.text.replace("Сақлайми?", f"✅ Возврат {no}-қисм сақланди."))
+        return await run_and_reply(update)
     async with LOCK:
         cfg = load_cfg()
         no = max((t["no"] for t in cfg["transhlar"]), default=0) + 1
@@ -734,7 +765,9 @@ async def vozvrat(update: Update, ctx):
     st = nazorat.returns_stats(nazorat.load_returns(str(VOZVRAT)))
     await update.message.reply_text(
         f"↩️ Возврат рўйхатида ҳозир: {st['n']} та товар.\n"
-        "Янги возврат Excel файлини ташланг.")
+        "Янги возврат Excel файлини ташланг.\n\n"
+        "Рўйхатсиз (фақат сумма ва нархлар) возврат бўлса — «Возврат» сўзи билан нархларни ёзинг, масалан:\n"
+        "Возврат\nБиржа нархи 149.94\nБриллиант 99.52\nВакс 97.41\n...\nСумма 208422")
 
 
 async def handle_returns_file(update: Update, path, name):
@@ -820,6 +853,7 @@ async def tozalash_cb(update: Update, ctx):
         async with LOCK:
             backup(VOZVRAT)
             nazorat.save_returns(str(VOZVRAT), [])
+            cfg = load_cfg(); cfg["vozvrat_qismlar"] = []; save_cfg(cfg)
         return await q.edit_message_text("✅ Возврат рўйхати ўчирилди. Янги рўйхатни /vozvrat орқали ташланг.")
     async with LOCK:
         backup(LEDGER)
@@ -829,6 +863,7 @@ async def tozalash_cb(update: Update, ctx):
             nazorat.save_returns(str(VOZVRAT), [])
             cfg = load_cfg()
             cfg["transhlar"] = []
+            cfg["vozvrat_qismlar"] = []
             save_cfg(cfg)  # save_cfg ўзи нусха олади
         (DATA / "last_backup.txt").unlink(missing_ok=True)
     if q.data == "rs_all":

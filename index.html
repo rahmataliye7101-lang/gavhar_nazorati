@@ -220,14 +220,24 @@ async function loadHolat() {
       <div class="card"><div class="lb">O'rtacha kunlik sarf</div><div class="v">${usd(d.temp)}</div></div>
       <div class="card"><div class="lb">Taxminiy tugash</div><div class="v">${dmy(d.tugash)}</div></div>
     </div>
-    ${d.vozvrat && d.vozvrat.n ? `<div class="sec">Vozvrat</div>
+    ${(d.vozvrat && d.vozvrat.n) || (d.qismlar || []).length ? `<div class="sec">Vozvrat</div>
     <div class="card">
+      <div class="mut" style="margin-bottom:8px">1-qism · ro'yxat bo'yicha</div>
       <div class="g2">
         <div><div class="lb">Do'konlar qaytargan</div><div class="v">${fmt(d.vozvrat.n)} ta</div><div class="mut">${usd(d.vozvrat.summa)}</div></div>
         <div><div class="lb">Boshqa do'konga berilgan</div><div class="v grn">${fmt(d.vozvrat.berilgan_n)} ta</div><div class="mut">${usd(d.vozvrat.berilgan_summa)}</div></div>
       </div>
       <div class="rw" style="margin-top:10px"><span class="mut">Gavhar'da qolgan (hali berilmagan)</span><b>${fmt(d.vozvrat.qolgan_n)} ta · ${usd(d.vozvrat.qolgan_summa)}</b></div>
-    </div>` : ''}
+    </div>
+    ${(d.qismlar || []).map(q => `<div class="card">
+      <div class="mut" style="margin-bottom:8px">${q.no}-qism · summa bo'yicha (birja ${q.birja} narxida)</div>
+      <div class="g2">
+        <div><div class="lb">Jami vozvrat</div><div class="v">${usd(q.summa)}</div></div>
+        <div><div class="lb">Do'konlarga berilgan</div><div class="v grn">${usd(q.berilgan)}</div><div class="mut">${fmt(q.n)} ta tovar</div></div>
+      </div>
+      <div class="bar"><i style="width:${Math.max(1, Math.min(100, q.summa ? q.berilgan / q.summa * 100 : 0))}%"></i></div>
+      <div class="rw" style="margin-top:6px"><span class="mut">Gavhar'da qolgan</span><b>${usd(q.qolgan)}</b></div>
+    </div>`).join('')}` : ''}
     <div class="sec">Narx nazorati</div>
     <div class="card">
       <div class="g2"><div><div class="lb">Qimmat yozilgan (zarar)</div><div class="v red">${sgn(d.qimmat)} $</div></div>

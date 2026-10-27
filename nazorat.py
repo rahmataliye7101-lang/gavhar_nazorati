@@ -372,6 +372,12 @@ def find_return(r, g, returns, f1=None, tol=0.3):
     return cands[0], False
 
 
+def qism_stats(cfg):
+    """Суммали возврат қисмлари: берилган / қолган."""
+    return [dict(no=q["no"], sana=q.get("sana"), birja=q.get("birja"), summa=q["summa_usd"], berilgan=q.get("_used", 0.0),
+                 n=q.get("_n", 0), qolgan=q["summa_usd"] - q.get("_used", 0.0)) for q in cfg.get("vozvrat_qismlar") or []]
+
+
 def returns_stats(returns):
     used = [r for r in returns if r.get("_used")]
     rest = [r for r in returns if not r.get("_used")]
@@ -419,6 +425,9 @@ def compute(cfg, ledger, returns=None):
         ret.pop("_used", None)
     chegara = cfg.get("chegara_usd_gr", 0.3)
     tr = sorted(cfg["transhlar"], key=lambda t: t["sana"])
+    vq = cfg.get("vozvrat_qismlar") or []  # суммаси ва нарх жадвали билан берилган возврат (рўйхатсиз)
+    for q in vq:
+        q["_used"], q["_n"] = 0.0, 0
     left = [float(t["summa_usd"]) for t in tr]
     used = [0.0] * len(tr)
     first_date = [None] * len(tr)
@@ -494,6 +503,27 @@ def compute(cfg, ledger, returns=None):
                                f"шу нархда берилди, тўғри."))
                 out.append(r)
                 continue
+            done = False
+            for q in vq:
+                pq = q["narxlar"].get(r["tur"]) or q["narxlar"].get("Дорика")
+                if pq and abs(s / g - pq) <= chegara and q["summa_usd"] - q["_used"] >= s - 1:
+                    q["_used"] += s; q["_n"] += 1
+                    exp = pq * g
+                    r.update(transh="возврат", vozvrat_qism=q["no"], hisob=exp, hisob_1gr=pq, fakt_1gr=s / g, farq_gr=s / g - pq,
+                             farq=s - exp, holat="✓ возврат товар",
+                             izoh=f"Возврат товар ({q['no']}-қисм, биржа {q['birja']} нархида): 1 гр {pq:.2f} $ — тўғри.")
+                    out.append(r)
+                    done = True
+                    break
+            if done:
+                continue
+            for q in vq:
+                hit = next((tn for tn, pv in q["narxlar"].items() if abs(s / g - pv) <= chegara), None)
+                if hit and hit != r["tur"]:
+                    pq = q["narxlar"].get(r["tur"]) or q["narxlar"].get("Дорика")
+                    r["_pool_hint"] = (f"Gavhar «{hit}» нархини қўйган (возврат {q['no']}-қисм, {s / g:.2f} $). "
+                                       f"Бу товар «{r['tur']}» нархида бўлиши керак: возврат бўлса {pq:.2f} $, янги товар бўлса {cost / g:.2f} $ (транш).")
+                    break
             if ret is not None:
                 r["_ret_hint"] = (f"Возвратда ўхшаш товар бор ({ret.get('filial')}, {_dmy(ret.get('sana'))}), лекин у "
                                   f"{float(ret['summa']) / float(ret['gramm']):.2f} $ дан қайтарилган — бу ҳам мос эмас.")
@@ -512,6 +542,8 @@ def compute(cfg, ledger, returns=None):
             else:
                 r["holat"] = "⚠ ҚИММАТ" if r["farq_gr"] > 0 else "⚠ арзон"
                 r["izoh"] = sabab(r, tr, parts)
+                if r.get("_pool_hint"):
+                    r["izoh"] = r.pop("_pool_hint")
                 if r.get("_ret_hint"):
                     r["izoh"] += " " + r.pop("_ret_hint")
         if any(n == "пул етмади" for n, _, _ in parts):
@@ -917,7 +949,13 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
             L.append(f"💳 {tline} нархида текширилди" if tline else
                      ("💳 Ҳаммаси возврат товар — возврат нархида текширилди" if rv and len(rv) == len(rs) else "💳 Транш топилмади"))
             if rv:
-                L.append(f"↩️ {len(rv)} та товар возвратдан — возврат нархида берилган, тўғри")
+                r1 = [r for r in rv if not r.get("vozvrat_qism")]
+                r2_ = [r for r in rv if r.get("vozvrat_qism")]
+                if r1:
+                    L.append(f"↩️ {len(r1)} та товар возврат рўйхатидан — возврат нархида, тўғри")
+                if r2_:
+                    L.append(f"↩️ {len(r2_)} та товар ({sum(r['summa'] or 0 for r in r2_):,.2f} $) возврат 2-қисмдан — "
+                             f"возврат нархида, тўғри")
             if not nb:
                 L.append(f"\n✅ ТЎҒРИ. Фактура {fakt:,.2f} $ — нархлар тўғри.")
             else:
@@ -962,8 +1000,11 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
         if act:
             L.append(f"💰 Жорий транш №{act['no']} ({_dmy(act['sana'])}): қолдиқ {act['left']:,.0f} $ (ишлатилди {act['used']:,.0f} $)")
         L.append(f"💰 Gavhar да жами қолдиқ: {s['left']:,.0f} $")
+        for q in qism_stats(cfg):
+            L.append(f"↩️ Возврат {q['no']}-қисм: қолди {q['qolgan']:,.0f} $ ({q['summa']:,.0f} $ дан)")
         L.append("Батафсил: Excel файл ёки «Назорат» mini app.")
         return "\n".join(L)
+    s["qismlar"] = qism_stats(cfg)
     L += holat_matn(rows, trs, s)
     return "\n".join(L)
 
@@ -1004,6 +1045,8 @@ def holat_matn(rows, trs, s):
     rv = sum(1 for r in rows if r.get("transh") == "возврат")
     if rv:
         L.append(f"↩️ Возвратдан берилган: {rv} та товар (возврат нархида)")
+    for q in s.get("qismlar", []):
+        L.append(f"↩️ Возврат {q['no']}-қисм: {q['summa']:,.0f} $ → берилди {q['berilgan']:,.0f} $, қолди {q['qolgan']:,.0f} $")
     if s.get("tugash"):
         L.append(f"⏳ Пул тахминан {s['tugash']:%d.%m.%Y} гача етади")
     return L

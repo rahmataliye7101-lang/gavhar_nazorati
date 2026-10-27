@@ -89,6 +89,7 @@ def state():
     rows, trs = N.compute(cfg, N.load_ledger(str(B.LEDGER)), rets)
     st = N.stats(rows, trs)
     st["vozvrat"] = N.returns_stats(rets)
+    st["qismlar"] = N.qism_stats(cfg)
     return cfg, rows, trs, st
 
 
@@ -211,6 +212,7 @@ async def api_holat(request):
     rows, trs = apply_filter(rows_all, trs_all, tr_f, oy)
     s = N.stats(rows, trs)
     s["vozvrat"] = s_all["vozvrat"]
+    s["qismlar"] = s_all.get("qismlar", [])
     inv = invoices(rows, cfg)
     ok = s["ok"]
     davr = None
@@ -254,6 +256,7 @@ async def api_holat(request):
         turlar=sorted(({**t, "gramm": r2(t["gramm"]), "farq": r2(t["farq"])} for t in turlar.values()), key=lambda t: -t["n"]),
         faktura_soni=len(inv), oxirgi=inv[0] if inv else None,
         vozvrat={k: r2(v) if isinstance(v, float) else v for k, v in s["vozvrat"].items()},
+        qismlar=[{k: r2(v) if isinstance(v, float) else v for k, v in q.items()} for q in s.get("qismlar", [])],
         davr=davr,
     ))
 
