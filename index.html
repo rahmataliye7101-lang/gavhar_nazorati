@@ -58,6 +58,7 @@ tr:last-child td{border-bottom:0}
 .empty{text-align:center;padding:30px 10px;color:var(--mut)}
 .skel{height:96px;border-radius:16px;background:var(--card);opacity:.6;margin-bottom:10px}
 .filt{display:flex;align-items:center;justify-content:space-between;background:var(--card);border-radius:12px;padding:8px 12px;margin-bottom:10px;font-size:13px}
+  .trl{margin-top:6px;font-size:12px;color:var(--mut)}
 </style>
 </head>
 <body>
@@ -318,6 +319,7 @@ function invCard(a) {
     <div class="rw"><b style="font-size:14px">${E(a.faktura) || '—'}</b><span class="mut">${dmy(a.sana)}</span></div>
     <div class="mut">${E(a.filial)} · ${a.n} pozitsiya · ${fmt(a.gramm, 2)} gr${a.vozvrat ? ` · <span style="color:var(--grn)">↩ ${a.vozvrat} ta vozvrat</span>` : ''}</div>
     <div class="rw" style="margin-top:6px"><span class="amt">${usd(a.fakt, 2)}</span>${farqBadge(a.farq, a.bad)}</div>
+    <div class="trl">${(a.trs || []).length ? '💳 ' + a.trs.map(t => `Transh №${t.no} · ${dm(t.sana)} · birja ${t.birja}`).join(' + ') + ' narxida tekshirildi' : (a.vozvrat === a.n ? '↩ Hammasi vozvrat narxida tekshirildi' : '⚠ Transhga tushmagan')}</div>
     ${open ? `<div class="det">
       <table><tr><th>Tur</th><th>Gr</th><th>Faktura</th><th>Kerak</th><th>Farq</th></tr>
       ${a.turlar.map(t => `<tr><td>${E(t.tur)} <span class="mut">×${t.n}</span></td><td>${fmt(t.gramm, 2)}</td><td>${fmt(t.fakt_1gr, 2)}</td><td>${fmt(t.hisob_1gr, 2)}</td>
@@ -423,7 +425,7 @@ async function loadTransh() {
         <div class="mut" style="margin-top:6px">1 gr = lom (birja ${t.birja} × 585/999) + ishchilik + QQS</div>
         <div class="rw" style="margin-top:12px;justify-content:flex-start;gap:6px">
           ${closed ? `<button class="btn2" onclick="yop(${t.no}, null)">Qayta ochish</button>`
-                   : `<input type="date" id="yd${t.no}" value="${today}" style="flex:1;padding:7px"><button class="btn2" onclick="yop(${t.no}, $('#yd${t.no}').value)">Yopish</button>`}
+                   : `<button class="btn2" onclick="yop(${t.no}, '${today}')">Transhni yopish</button><span class="mut" style="font-size:12px">yopilsa yangi fakturalar faqat keyingi transh narxida tekshiriladi</span>`}
         </div>
       </div>`; }).join('')}
     <div class="sec">Sozlama</div>
@@ -440,10 +442,10 @@ async function loadTransh() {
   } catch (e) { fail(el, e); }
 }
 async function yop(no, sana) {
-  const msg = sana ? `Transh №${no} ni ${dmy(sana)} dan yopaymi? Shu sanadan keyingi tovarlar unga yozilmaydi.` : `Transh №${no} ni qayta ochaymi?`;
+  const msg = sana ? `Transh №${no} ni yopaymi? Endi yangi fakturalar faqat joriy (keyingi) transh narxida tekshiriladi. Oldin tekshirilganlar o'zgarmaydi.` : `Transh №${no} ni qayta ochaymi?`;
   const go = await new Promise(res => tg && tg.showConfirm && tg.initData ? tg.showConfirm(msg, res) : res(confirm(msg)));
   if (!go) return;
-  try { await api('/api/transh/yop', {no, sana}); haptic('success'); toast(sana ? 'Yopildi' : 'Ochildi'); invalidate(); loadTransh(); }
+  try { await api('/api/transh/yop', {no, sana}); haptic('success'); toast(sana ? 'Yopildi — endi joriy transh ishlaydi' : 'Ochildi'); invalidate(); loadTransh(); }
   catch (e) { toast(e.message); }
 }
 function newForm(prev) {

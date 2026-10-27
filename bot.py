@@ -424,7 +424,7 @@ async def send_long(msg, text):
         await msg.reply_text(text[i:i + 3900])
 
 
-async def run_and_reply(update: Update, files=(), caption="Ҳисобот"):
+async def run_and_reply(update: Update, files=(), caption="Ҳисобот", umumiy=False):
     msg = update.effective_message
     await msg.chat.send_action(ChatAction.TYPING)
     async with LOCK:
@@ -436,9 +436,10 @@ async def run_and_reply(update: Update, files=(), caption="Ҳисобот"):
                 return
             for fp in sorted(Path(td).glob("Faktura_*.xlsx")):  # ҳар бир янги фактура (дўкон) бўйича алоҳида текширув
                 with open(fp, "rb") as f:
-                    await msg.reply_document(f, filename=fp.name, caption="Фактура текшируви — " + fp.stem[8:].replace("_", " "))
-            with open(out, "rb") as f:
-                await msg.reply_document(f, filename=out.name, caption=caption + " (умумий)")
+                    await msg.reply_document(f, filename=fp.name, caption="📑 Батафсил — " + fp.stem[8:].replace("_", " "))
+            if umumiy:
+                with open(out, "rb") as f:
+                    await msg.reply_document(f, filename=out.name, caption="📑 Умумий ҳисобот")
 
 
 # ---------------- транш матнини ўқиш ----------------
@@ -493,21 +494,22 @@ def check_transh(p, cfg):
         errs.append("тур нархлари топилмади")
     if p["birja"]:
         lom = p["birja"] * 585 / 999
-        notes.append(f"Лом (биржа×585/999) = {lom:.2f}" + (f", сиз ёзгансиз {p['lom']:.2f}" if p["lom"] else ""))
         if p["lom"] and abs(lom - p["lom"]) > 0.05:
-            notes.append("⚠ Ёзилган лом ҳисобдан фарқ қилади!")
+            notes.append(f"⚠ Лом нотўғри: {p['lom']:.2f} ёзилган, ҳисоб бўйича {lom:.2f} бўлиши керак")
+        notes.append(f"Лом: {lom:.2f} $\n\n1 гр нархлари:")
         prev = cfg["transhlar"][-1] if cfg["transhlar"] else None
+        ogoh = []
         for n, v in p["narxlar"].items():
-            line = f"{n}: {v:.2f} (ишчилик+НДС {v - lom:.2f}"
+            notes.append(f"• {n}: {v:.2f} $ (лом + {v - lom:.2f})")
             if prev and n in prev["narxlar"]:
-                pl = prev["narxlar"][n] - prev["birja_999"] * 585 / 999
-                d = (v - lom) - pl
-                line += f", олдинги транш {pl:.2f}" + (f", ⚠ {d:+.2f}" if abs(d) > 0.02 else "")
-            notes.append(line + ")")
+                d = (v - lom) - (prev["narxlar"][n] - prev["birja_999"] * 585 / 999)
+                if abs(d) > 0.02:
+                    ogoh.append(f"⚠ {n}: ишчилик+НДС олдинги траншдан {d:+.2f} $ фарқ қилади")
         if prev:
             for n in prev["narxlar"]:
                 if n not in p["narxlar"]:
-                    notes.append(f"⚠ «{n}» нархи берилмади — бу турдаги товар шу траншда ҳисобланмайди (Дорика нархи олинади)")
+                    ogoh.append(f"⚠ «{n}» нархи йўқ — бу товарларга Дорика нархи олинади")
+        notes += ([""] + ogoh) if ogoh else ["", "✅ Ишчилик+НДС олдинги транш билан бир хил"]
     return errs, notes
 
 
@@ -524,7 +526,7 @@ async def myid(update: Update, ctx):
 
 @need("holat")
 async def holat(update: Update, ctx):
-    await run_and_reply(update)
+    await run_and_reply(update, umumiy=True)
 
 
 @guard
@@ -543,10 +545,11 @@ async def confirm_transh(update: Update, ctx, p):
     cfg = load_cfg()
     errs, notes = check_transh(p, cfg)
     if errs:
-        return await update.effective_message.reply_text("❌ " + "; ".join(errs) + "\n\nНамуна учун /start")
+        return await update.effective_message.reply_text("❌ Тушунмадим: " + "; ".join(errs) + ".\nGavhar нарх хабарини тўлиқ forward қилинг.")
     ctx.user_data["pending_transh"] = p
     no = max((t["no"] for t in cfg["transhlar"]), default=0) + 1
-    text = (f"Янги транш №{no}\nСана: {p['sana']}\nСумма: {p['summa']:,.0f} $\nБиржа 999: {p['birja']}\n\n" + "\n".join(notes)
+    sana = nazorat._dmy(p["sana"]) if p.get("sana") else "—"
+    text = (f"💳 Янги транш №{no}\n📅 {sana} · 💵 {p['summa']:,.0f} $ · биржа {p['birja']}\n" + "\n".join(notes)
             + "\n\nСақлайми?")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Сақлаш", callback_data="tr_ok"),
                                 InlineKeyboardButton("❌ Бекор", callback_data="tr_no")]])
@@ -566,15 +569,14 @@ async def transh_flow(update: Update, ctx, text):
     if dup and not p["summa"]:
         ctx.user_data["await_summa"] = p
         await update.effective_message.reply_text(
-            f"ℹ️ Шу сана ва нархлар транш №{dup['no']} да бор ({dup['sana']}, {dup['summa_usd']:,.0f} $, биржа {dup['birja_999']}).\n"
-            "Шу нархда яна пул берган бўлсангиз — суммасини ёзинг (масалан: 150000), алоҳида транш бўлиб қўшилади.\n"
-            "Берилмаган бўлса — эътибор берманг.")
+            f"ℹ️ Бу нархлар олдин сақланган (Транш №{dup['no']}, {nazorat._dmy(dup['sana'])}, {dup['summa_usd']:,.0f} $).\n"
+            "Шу нархда яна пул берган бўлсангиз — суммасини ёзинг (масалан: 150000).")
         return True
     if not p["summa"]:
         ctx.user_data["await_summa"] = p
         await update.effective_message.reply_text(
-            f"Сана {p['sana']}, биржа {p['birja']}, {len(p['narxlar'])} та тур нархи ўқилди.\n"
-            "Шу нархлар бўйича қанча пул берилди? Суммани ёзинг (масалан: 707000)")
+            f"✅ Нархлар ўқилди ({nazorat._dmy(p['sana']) if p.get('sana') else '—'}, биржа {p['birja']}).\n"
+            "Қанча пул берилди? Суммани ёзинг (масалан: 707000)")
         return True
     await confirm_transh(update, ctx, p)
     return True
@@ -612,9 +614,9 @@ async def on_text(update: Update, ctx):
     if await transh_flow(update, ctx, text):
         return
     await update.message.reply_text(
-        "Фактура Excel файлини ташланг — текшираман.\n"
-        "Янги пул берилган бўлса, санаси, биржа нархи ва тур нархларини ёзинг (кейин суммани сўрайман).\n"
-        "Ҳолат: /holat · Бекор: /bekor")
+        "📎 Фактура (Excel) ташланг — текшириб бераман.\n"
+        "💳 Янги пул берилса — Gavhar нарх хабарини forward қилинг.\n"
+        "📊 Ҳолат: /holat")
 
 
 async def transh_cb(update: Update, ctx):
@@ -635,7 +637,7 @@ async def transh_cb(update: Update, ctx):
         cfg["transhlar"].sort(key=lambda t: t["sana"])
         save_cfg(cfg)
     await q.edit_message_text(q.message.text.replace("Сақлайми?", f"✅ Транш №{no} сақланди."))
-    await run_and_reply(update, caption="Янги транш билан ҳисобот")
+    await run_and_reply(update)
 
 
 @need("transh_qoshish")
@@ -652,8 +654,9 @@ async def yop(update: Update, ctx):
         if not t:
             return await update.message.reply_text("Бундай транш йўқ.")
         t["yopilgan_sana"] = sana.isoformat()
+        t["yopilgan_qator"] = len(nazorat.load_ledger(str(LEDGER)))
         save_cfg(cfg)
-    await update.message.reply_text(f"Транш №{a[0]} {sana:%d.%m.%Y} дан ёпилди.")
+    await update.message.reply_text(f"🔒 Транш №{a[0]} ёпилди. Энди янги фактуралар фақат жорий транш нархида текширилади.")
     await run_and_reply(update)
 
 
@@ -668,8 +671,9 @@ async def och(update: Update, ctx):
         if not t:
             return await update.message.reply_text("Бундай транш йўқ.")
         t["yopilgan_sana"] = None
+        t["yopilgan_qator"] = None
         save_cfg(cfg)
-    await update.message.reply_text(f"Транш №{a[0]} қайта очилди.")
+    await update.message.reply_text(f"🔓 Транш №{a[0]} қайта очилди.")
 
 
 @need("transh_qoshish")
@@ -694,7 +698,7 @@ async def bekor(update: Update, ctx):
     async with LOCK:
         shutil.copy(last, LEDGER)
         lb.unlink(missing_ok=True)
-    await update.message.reply_text("↩️ Охирги фактура юкламаси бекор қилинди.")
+    await update.message.reply_text("↩️ Охирги юкланган фактура бекор қилинди.")
     await run_and_reply(update)
 
 
@@ -729,9 +733,8 @@ async def vozvrat(update: Update, ctx):
     ctx.user_data["vozvrat_mode"] = True
     st = nazorat.returns_stats(nazorat.load_returns(str(VOZVRAT)))
     await update.message.reply_text(
-        f"↩️ Ҳозир возврат рўйхатида: {st['n']} та товар ({st['summa']:,.0f} $).\n"
-        "Дўконлар возврат қилган товарлар Excel рўйхатини ташланг. Керакли устунлар: сана, дўкон, артикул/код, "
-        "товар номи, грамм, возврат суммаси (ёки 1 гр нархи).")
+        f"↩️ Возврат рўйхатида ҳозир: {st['n']} та товар.\n"
+        "Янги возврат Excel файлини ташланг.")
 
 
 async def handle_returns_file(update: Update, path, name):
@@ -747,10 +750,9 @@ async def handle_returns_file(update: Update, path, name):
         backup(VOZVRAT)
         added, dup = nazorat.add_returns(str(VOZVRAT), rows)
     await update.message.reply_text(
-        f"↩️ Возврат рўйхати: {added} та товар қўшилди ({sum(r['gramm'] for r in rows):,.2f} гр, "
-        f"{sum(r['summa'] for r in rows):,.2f} $), такрорий: {dup}.\n"
-        "Энди фактурада возврат нархида келган товарлар «возврат товар берилган» деб белгиланади. Барча фактуралар қайта текширилди:")
-    await run_and_reply(update, caption=f"Ҳисобот — возврат қўшилгандан кейин")
+        f"✅ Возврат рўйхати сақланди: {added} та товар қўшилди" + (f" ({dup} таси олдин бор эди)" if dup else "") + ".\n"
+        "Энди фактурада шу товар возврат нархида келса — тўғри деб ҳисобланади.")
+    await run_and_reply(update)
 
 
 @guard
@@ -758,7 +760,7 @@ async def document(update: Update, ctx):
     doc = update.message.document
     name = doc.file_name or "faktura.xlsx"
     if not name.lower().endswith((".xlsx", ".xlsm")):
-        return await update.message.reply_text("Фақат .xlsx файл қабул қилинади (Excel да «Сохранить как → .xlsx»).")
+        return await update.message.reply_text("❌ Фақат Excel (.xlsx) файл ташланг.")
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / name
         f = await doc.get_file()
@@ -779,11 +781,11 @@ async def document(update: Update, ctx):
             rows = await asyncio.to_thread(nazorat.read_invoice, str(path))
         except Exception as e:
             log.exception("read error")
-            return await update.message.reply_text(f"❌ Файлни ўқиб бўлмади: {e}")
+            return await update.message.reply_text("❌ Файлни очиб бўлмади. Excel (.xlsx) эканини текширинг.")
         if not rows:
             return await update.message.reply_text(
-                "❌ Файлда Gavhar фактура қаторлари топилмади.\n"
-                "Бу возврат рўйхати бўлса — аввал /vozvrat ёзинг, кейин файлни ташланг.")
+                "❌ Бу файлда фактура топилмади.\n"
+                "Возврат рўйхати бўлса — аввал /vozvrat ёзинг, кейин файлни ташланг.")
         await run_and_reply(update, files=[str(path)], caption=f"Ҳисобот — {name}")
         if filecmp.cmp(bk, LEDGER, shallow=False):
             bk.unlink()  # ҳеч нарса қўшилмади — бекор қилиш нуқтаси ўзгармайди
@@ -858,13 +860,13 @@ async def xatolar_cmd(update: Update, ctx):
         st = await asyncio.to_thread(nazorat.write_errors_report, str(out), rows, f"Фильтр: {arg or 'барча хатоликлар'}", rets)
         with open(out, "rb") as f:
             await update.message.reply_document(f, filename=nm,
-                                                caption=f"⚠ Хатоликлар: {st['n']} позиция, {st['faktura']} фактура, фарқ {st['farq']:+,.2f} $")
+                                                caption=f"❌ Хатолар: {st['faktura']} та фактура, {st['n']} та товар, жами {st['farq']:+,.2f} $")
 
 
 async def on_error(update, ctx):
     log.exception("Хато", exc_info=ctx.error)
     if isinstance(update, Update) and update.effective_message:
-        await update.effective_message.reply_text(f"❌ Хатолик: {ctx.error}")
+        await update.effective_message.reply_text("❌ Нимадир хато кетди. Яна бир марта уриниб кўринг.")
 
 
 def main():

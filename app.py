@@ -119,6 +119,7 @@ def invoices(rows, cfg):
                               n=0, gramm=0.0, fakt=0.0, hisob=0.0, bad=0, qimmat=0.0, vozvrat=0, turlar={})
         if a["transh"] is None:
             a["transh"] = transh_no(r)
+        a.setdefault("trs", set()).update(int(x) for x in re.findall(r"№(\d+)", str(r.get("transh") or "")))
         a["n"] += 1
         if r.get("transh") == "возврат":
             a["vozvrat"] += 1
@@ -133,9 +134,12 @@ def invoices(rows, cfg):
         t = a["turlar"].setdefault(r["tur"], dict(tur=r["tur"], n=0, gramm=0.0, fakt=0.0, hisob=0.0, bad=0))
         t["n"] += 1; t["gramm"] += r["gramm"] or 0; t["fakt"] += r["summa"] or 0; t["hisob"] += r.get("hisob") or 0
         t["bad"] += 1 if isbad else 0
+    tinfo = {t["no"]: t for t in cfg.get("transhlar", [])}
     out = []
     for a in inv.values():
         a["farq"] = a["fakt"] - a["hisob"]
+        a["trs"] = [dict(no=n, sana=tinfo[n]["sana"], birja=tinfo[n].get("birja_999"))
+                    for n in sorted(a.pop("trs", set())) if n in tinfo]
         tl = []
         for t in sorted(a["turlar"].values(), key=lambda t: -t["gramm"]):
             g = t["gramm"] or 1
@@ -366,6 +370,7 @@ async def api_transh_yop(request):
         if not t:
             return web.json_response({"errors": ["Бундай транш йўқ"]}, status=404)
         t["yopilgan_sana"] = d.isoformat() if d else None
+        t["yopilgan_qator"] = len(N.load_ledger(str(B.LEDGER))) if d else None
         B.save_cfg(cfg)
     return web.json_response({"ok": True})
 
@@ -528,15 +533,14 @@ async def start_cmd(update, ctx):
         B.add_user(update.effective_user.id, rec.get("role", "user"), B.uname(update.effective_user))
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🟡 Назоратни очиш", web_app=WebAppInfo(url=WEBAPP_URL))]]) if WEBAPP_URL else None
     await update.message.reply_text(
-        "Gavhar — тилло нарх назорати.\n\n"
-        "• Ҳолат, хатоликлар, траншлар — «Назоратни очиш» тугмаси ёки пастдаги «Назорат» менюси орқали.\n"
-        "• Фактура — тизим экспортини (.xlsx) шу чатга ташланг, бот текшириб ҳисобот қайтаради.\n"
-        "• Янги пул: Gavhar нарх хабарини forward қилинг, бот суммани сўрайди.\n"
-        "• /bekor — охирги юкламани бекор қилиш.\n"
-        "• /vozvrat — дўконлар возврат рўйхатини юклаш (файл номида «возврат» бўлса, ўзи танийди).\n"
-        "• /xatolar — ҳамма хатоликлар Excel да (Gavhar га эътироз учун).\n"
-        "• /tozalash — базани тозалаш (нолдан бошлаш, фақат админ).\n"
-        "• /admin — одам қўшиш / ўчириш (фақат админ).", reply_markup=kb)
+        "🟡 Gavhar — тилло нарх назорати\n\n"
+        "📎 Фактура (Excel) ташланг — текшириб бераман\n"
+        "💳 Янги пул — Gavhar нарх хабарини forward қилинг\n"
+        "↩️ Возврат рўйхати — /vozvrat\n"
+        "📊 Ҳолат — /holat\n"
+        "❌ Хатолар Excel да — /xatolar\n"
+        "↩️ Охирги фактурани бекор қилиш — /bekor\n\n"
+        "Батафсил — «Назоратни очиш» тугмаси.", reply_markup=kb)
 
 
 def make_bot():
