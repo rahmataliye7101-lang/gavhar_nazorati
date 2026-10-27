@@ -30,7 +30,10 @@ BASE = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
 TRANSH = DATA / "transhlar.json"
 LEDGER = DATA / "ledger.csv"
+VOZVRAT = DATA / "vozvrat.csv"
 BACKUP = DATA / "backup"
+WEBAPP_URL = os.environ.get("WEBAPP_URL") or (
+    f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}" if os.environ.get("RAILWAY_PUBLIC_DOMAIN") else "")
 ALLOWED = {int(x) for x in re.findall(r"\d+", os.environ.get("ALLOWED_USERS", ""))}
 LOCK = asyncio.Lock()
 
@@ -59,8 +62,11 @@ HELP = (
     "/och 1 — ёпилган траншни қайта очиш\n"
     "/chegara 0.3 — рухсат этилган фарқ, $/гр\n"
     "/bekor — охирги юкланган фактурани бекор қилиш\n"
+    "/vozvrat — возврат рўйхатини юклаш\n"
+    "/xatolar — хатоликлар Excel да (/xatolar GVR-27102026 — битта фактура)\n"
     "/tozalash — базани тозалаш (нолдан бошлаш)\n"
     "/reestr — барча приход қаторлари (CSV)\n"
+    "/admin — фойдаланувчилар (одам қўшиш/ўчириш, фақат админ)\n"
     "/myid — Telegram ID ингиз"
 )
 
@@ -104,23 +110,313 @@ def backup(path: Path):
             o.unlink()
 
 
+# ---------------- фойдаланувчилар ва админлар ----------------
+USERS = DATA / "users.json"
+
+
+def load_users():
+    try:
+        u = json.loads(USERS.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        u = {}
+    u.setdefault("users", [])
+    u.setdefault("invites", {})
+    u.setdefault("pending", [])
+    return u
+
+
+def save_users(u):
+    USERS.parent.mkdir(parents=True, exist_ok=True)
+    tmp = USERS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(u, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(USERS)
+
+
+def user_rec(uid):
+    return next((x for x in load_users()["users"] if int(x["id"]) == int(uid)), None)
+
+
+def allowed_id(uid) -> bool:
+    return uid is not None and (int(uid) in ALLOWED or user_rec(uid) is not None)
+
+
+def admin_id(uid) -> bool:
+    if uid is None:
+        return False
+    r = user_rec(uid)
+    return int(uid) in ALLOWED or bool(r and r.get("role") == "admin")
+
+
+def admin_ids():
+    return set(ALLOWED) | {int(x["id"]) for x in load_users()["users"] if x.get("role") == "admin"}
+
+
 def allowed(update: Update) -> bool:
     u = update.effective_user
-    return bool(u and u.id in ALLOWED)
+    return bool(u and allowed_id(u.id))
 
 
-async def deny(update: Update):
-    uid = update.effective_user.id if update.effective_user else "?"
+def is_admin(update: Update) -> bool:
+    u = update.effective_user
+    return bool(u and admin_id(u.id))
+
+
+def add_user(uid, role="user", name="", by=None):
+    u = load_users()
+    name = name or u.get("names", {}).get(str(uid), "")
+    rec = next((x for x in u["users"] if int(x["id"]) == int(uid)), None)
+    if rec:
+        rec["role"] = role
+        if name:
+            rec["name"] = name
+    else:
+        u["users"].append({"id": int(uid), "role": role, "name": name, "added_by": by, "sana": str(dt.date.today())})
+    u["pending"] = [p for p in u["pending"] if int(p) != int(uid)]
+    save_users(u)
+
+
+def remove_user(uid):
+    u = load_users()
+    u["users"] = [x for x in u["users"] if int(x["id"]) != int(uid)]
+    save_users(u)
+
+
+def uname(user):
+    if not user:
+        return ""
+    return (user.full_name or "") + (f" (@{user.username})" if user.username else "")
+
+
+async def deny(update: Update, ctx=None):
+    user = update.effective_user
+    uid = user.id if user else "?"
     await update.effective_message.reply_text(
-        f"⛔ Рухсат йўқ. Сизнинг ID: {uid}\nRailway → Variables → ALLOWED_USERS га шу ID ни қўшинг.")
+        f"⛔ Рухсат йўқ. Сизнинг ID: {uid}\nАдминга сўров юборилди — тасдиқлангач, /start ни қайта босинг.")
+    if not user:
+        return
+    u = load_users()
+    if int(uid) in [int(p) for p in u["pending"]]:
+        return  # аввал хабар берилган
+    u["pending"].append(int(uid))
+    u.setdefault("names", {})[str(uid)] = uname(user)
+    save_users(u)
+    bot = ctx.bot if ctx is not None else update.get_bot()
+    rows_kb = [[InlineKeyboardButton("✅ Фойдаланувчи", callback_data=f"ad_ok:{uid}:user"),
+                InlineKeyboardButton("👑 Админ", callback_data=f"ad_ok:{uid}:admin")],
+               [InlineKeyboardButton("❌ Рад этиш", callback_data=f"ad_no:{uid}")]]
+    if WEBAPP_URL:
+        from telegram import WebAppInfo
+        rows_kb.append([InlineKeyboardButton("📋 Admin бўлимида кўриш", web_app=WebAppInfo(url=WEBAPP_URL + "#admin"))])
+    kb = InlineKeyboardMarkup(rows_kb)
+    for aid in admin_ids():
+        try:
+            await bot.send_message(aid, f"🔔 Янги одам ботга кирмоқчи:\n{uname(user)}\nID: {uid}\n\nРухсат берасизми?",
+                                   reply_markup=kb)
+        except Exception:
+            log.warning("admin %s га хабар юборилмади", aid)
 
 
 def guard(fn):
     async def wrap(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not allowed(update):
-            return await deny(update)
+            return await deny(update, ctx)
         return await fn(update, ctx)
     return wrap
+
+
+def admin_only(fn):
+    async def wrap(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not allowed(update):
+            return await deny(update, ctx)
+        if not is_admin(update):
+            return await update.effective_message.reply_text("⛔ Бу бўлим фақат админлар учун.")
+        return await fn(update, ctx)
+    return wrap
+
+
+# ---------------- рухсатлар (ким нимани кўради) ----------------
+PERMS = {
+    "holat": "📊 Ҳолат (қолдиқ, умумий)",
+    "faktura": "🧾 Фактура бўлими",
+    "xatolar": "⚠️ Хатоликлар",
+    "transhlar": "💳 Траншлар ва нархлар (кўриш)",
+    "faktura_yuklash": "📥 Фактура юклаш",
+    "vozvrat_yuklash": "↩️ Возврат рўйхатини юклаш",
+    "transh_qoshish": "➕ Транш қўшиш / ёпиш, чегара",
+    "hisobot": "📑 Excel ҳисобот олиш",
+}
+DEFAULT_PERMS = ["holat", "faktura", "xatolar", "transhlar", "faktura_yuklash", "hisobot"]
+
+
+def user_perms(uid):
+    if admin_id(uid):
+        return list(PERMS)
+    r = user_rec(uid)
+    if not r:
+        return []
+    return list(r.get("perms", DEFAULT_PERMS))
+
+
+def has_perm(uid, p):
+    return p in user_perms(uid)
+
+
+def set_perms(uid, perms):
+    u = load_users()
+    for x in u["users"]:
+        if int(x["id"]) == int(uid):
+            x["perms"] = [p for p in PERMS if p in perms]
+    save_users(u)
+
+
+def need(perm):
+    def deco(fn):
+        async def wrap(update: Update, ctx):
+            if not allowed(update):
+                return await deny(update, ctx)
+            if not has_perm(update.effective_user.id, perm):
+                return await update.effective_message.reply_text(f"⛔ Сизда бу учун рухсат йўқ: {PERMS[perm]}. Админга мурожаат қилинг.")
+            return await fn(update, ctx)
+        return wrap
+    return deco
+
+
+def perm_kb(uid):
+    cur = set(user_perms(uid))
+    rows = [[InlineKeyboardButton(("✅ " if p in cur else "⬜ ") + t, callback_data=f"ad_pt:{uid}:{p}")] for p, t in PERMS.items()]
+    rows.append([InlineKeyboardButton("⬅️ Рўйхатга қайтиш", callback_data="ad_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def perm_text(uid):
+    r = user_rec(uid) or {}
+    return (f"⚙️ Рухсатлар: {r.get('name') or uid} (ID {uid})\n"
+            "Белгиланганларини кўради ва қила олади. Босиб ёқинг/ўчиринг — дарҳол сақланади.")
+
+
+ROLE_L = {"admin": "👑 админ", "user": "👤 фойдаланувчи"}
+
+
+def admin_panel():
+    u = load_users()
+    lines = ["👥 Фойдаланувчилар", ""]
+    for aid in sorted(ALLOWED):
+        lines.append(f"👑 {aid} — асосий админ (Railway)")
+    for x in u["users"]:
+        if int(x["id"]) in ALLOWED:
+            continue
+        lines.append(f"{ROLE_L.get(x.get('role'), x.get('role'))} {x.get('name') or '—'} · {x['id']}")
+    if len(lines) == 2:
+        lines.append("(ҳали ҳеч ким қўшилмаган)")
+    rows = [[InlineKeyboardButton("➕ Ҳавола: фойдаланувчи", callback_data="ad_inv:user"),
+             InlineKeyboardButton("➕ Ҳавола: админ", callback_data="ad_inv:admin")],
+            [InlineKeyboardButton("✍️ ID билан қўшиш", callback_data="ad_id")]]
+    for x in u["users"]:
+        if int(x["id"]) in ALLOWED:
+            continue
+        nm = (x.get("name") or str(x["id"]))[:22]
+        other = "user" if x.get("role") == "admin" else "admin"
+        rows.append([InlineKeyboardButton(f"⚙️ {nm}", callback_data=f"ad_perm:{x['id']}"),
+                     InlineKeyboardButton("🔁 " + ("фойд." if other == "user" else "админ"), callback_data=f"ad_role:{x['id']}:{other}"),
+                     InlineKeyboardButton("🗑", callback_data=f"ad_del:{x['id']}")])
+    lines += ["", "Одам қўшиш: ҳавола яратиб юборинг (24 соат, бир марта), ёки у ботга /myid ёзиб берган ID ни киритинг. "
+              "Нотаниш одам ботга кирса, сизга тасдиқлаш тугмаси келади."]
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+@admin_only
+async def admin(update: Update, ctx):
+    text, kb = admin_panel()
+    await update.effective_message.reply_text(text, reply_markup=kb)
+
+
+async def admin_cb(update: Update, ctx):
+    q = update.callback_query
+    if not is_admin(update):
+        return await q.answer("Фақат админлар учун", show_alert=True)
+    await q.answer()
+    parts = q.data.split(":")
+    act = parts[0]
+    if act == "ad_inv":
+        role = parts[1]
+        import secrets
+        code = secrets.token_urlsafe(8)
+        u = load_users()
+        now = dt.datetime.now()
+        u["invites"] = {k: v for k, v in u["invites"].items() if v["exp"] > now.isoformat()}
+        u["invites"][code] = {"role": role, "exp": (now + dt.timedelta(hours=24)).isoformat(), "by": update.effective_user.id}
+        save_users(u)
+        me = await ctx.bot.get_me()
+        link = f"https://t.me/{me.username}?start=inv_{code}"
+        return await q.message.reply_text(
+            f"🔗 Таклиф ҳаволаси ({ROLE_L[role]}), 24 соат амал қилади, бир марта ишлайди:\n{link}\n\n"
+            "Шу ҳаволани қўшмоқчи бўлган одамга юборинг — у босиб «Start» ни босса, ўзи қўшилади.")
+    if act == "ad_id":
+        ctx.user_data["await_admin_id"] = True
+        return await q.message.reply_text("Қўшиладиган одамнинг Telegram ID сини ёзинг (масалан: 512334871).\n"
+                                          "ID ни у ботга /myid ёзиб билади.")
+    if act == "ad_ok":
+        uid, role = int(parts[1]), parts[2]
+        add_user(uid, role, by=update.effective_user.id)
+        await q.edit_message_text(q.message.text + f"\n\n✅ Қўшилди ({ROLE_L[role]}).",
+                                  reply_markup=None if role == "admin" else InlineKeyboardMarkup(
+                                      [[InlineKeyboardButton("⚙️ Нималарни кўришини белгилаш", callback_data=f"ad_perm:{uid}")]]))
+        try:
+            await ctx.bot.send_message(uid, f"✅ Сизга рухсат берилди ({ROLE_L[role]}). /start ни босинг.")
+        except Exception:
+            pass
+        return
+    if act == "ad_no":
+        uid = int(parts[1])
+        u = load_users()
+        u["pending"] = [p for p in u["pending"] if int(p) != uid]
+        save_users(u)
+        return await q.edit_message_text(q.message.text + "\n\n❌ Рад этилди.")
+    if act == "ad_perm":
+        uid = int(parts[1])
+        if admin_id(uid):
+            return await q.message.reply_text("👑 Админда ҳамма рухсатлар бор. Чеклаш учун аввал 🔁 билан фойдаланувчи қилинг.")
+        return await q.message.reply_text(perm_text(uid), reply_markup=perm_kb(uid))
+    if act == "ad_pt":
+        uid, p = int(parts[1]), parts[2]
+        cur = set(user_perms(uid))
+        cur.symmetric_difference_update({p})
+        set_perms(uid, cur)
+        return await q.edit_message_reply_markup(reply_markup=perm_kb(uid))
+    if act == "ad_back":
+        text, kb = admin_panel()
+        return await q.edit_message_text(text, reply_markup=kb)
+    if act == "ad_del":
+        remove_user(int(parts[1]))
+    if act == "ad_role":
+        rec = user_rec(int(parts[1]))
+        if rec:
+            add_user(int(parts[1]), parts[2], rec.get("name", ""))
+    text, kb = admin_panel()
+    await q.edit_message_text(text, reply_markup=kb)
+
+
+async def accept_invite(update: Update, ctx, code) -> bool:
+    u = load_users()
+    inv = u["invites"].get(code)
+    if not inv or inv["exp"] < dt.datetime.now().isoformat():
+        await update.effective_message.reply_text("⛔ Таклиф ҳаволаси эскирган ёки ишлатилган. Админдан янгисини сўранг.")
+        return False
+    del u["invites"][code]
+    save_users(u)
+    user = update.effective_user
+    add_user(user.id, inv["role"], uname(user), by=inv.get("by"))
+    for aid in admin_ids():
+        if aid != user.id:
+            try:
+                await ctx.bot.send_message(
+                    aid, f"✅ {uname(user)} (ID {user.id}) ҳавола орқали қўшилди — {ROLE_L[inv['role']]}.\n"
+                         + ("Ҳозир стандарт рухсатлар берилди. Нималарни кўришини белгиланг:" if inv["role"] != "admin" else ""),
+                    reply_markup=None if inv["role"] == "admin" else InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("⚙️ Нималарни кўришини белгилаш", callback_data=f"ad_perm:{user.id}")]]))
+            except Exception:
+                pass
+    return True
 
 
 async def send_long(msg, text):
@@ -134,10 +430,15 @@ async def run_and_reply(update: Update, files=(), caption="Ҳисобот"):
     async with LOCK:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td) / f"Gavhar_nazorat_{dt.date.today():%Y-%m-%d}.xlsx"
-            text = await asyncio.to_thread(nazorat.run, str(TRANSH), str(LEDGER), str(out), list(files))
+            text = await asyncio.to_thread(nazorat.run, str(TRANSH), str(LEDGER), str(out), list(files), str(VOZVRAT))
             await send_long(msg, text)
+            if update.effective_user and not has_perm(update.effective_user.id, "hisobot"):
+                return
+            for fp in sorted(Path(td).glob("Faktura_*.xlsx")):  # ҳар бир янги фактура (дўкон) бўйича алоҳида текширув
+                with open(fp, "rb") as f:
+                    await msg.reply_document(f, filename=fp.name, caption="Фактура текшируви — " + fp.stem[8:].replace("_", " "))
             with open(out, "rb") as f:
-                await msg.reply_document(f, filename=out.name, caption=caption)
+                await msg.reply_document(f, filename=out.name, caption=caption + " (умумий)")
 
 
 # ---------------- транш матнини ўқиш ----------------
@@ -213,7 +514,7 @@ def check_transh(p, cfg):
 # ---------------- ҳандлерлар ----------------
 async def start(update: Update, ctx):
     if not allowed(update):
-        return await deny(update)
+        return await deny(update, ctx)
     await update.message.reply_text(HELP, parse_mode="Markdown")
 
 
@@ -221,7 +522,7 @@ async def myid(update: Update, ctx):
     await update.message.reply_text(f"Сизнинг Telegram ID: {update.effective_user.id}")
 
 
-@guard
+@need("holat")
 async def holat(update: Update, ctx):
     await run_and_reply(update)
 
@@ -257,6 +558,9 @@ async def transh_flow(update: Update, ctx, text):
     p = parse_transh(text or "")
     if not p["birja"] or len(p["narxlar"]) < 2:
         return False
+    if not has_perm(update.effective_user.id, "transh_qoshish"):
+        await update.effective_message.reply_text(f"⛔ Сизда бу учун рухсат йўқ: {PERMS['transh_qoshish']}.")
+        return True
     cfg = load_cfg()
     dup = next((t for t in cfg["transhlar"] if t["sana"] == p["sana"] and abs(t["birja_999"] - p["birja"]) < 0.005), None)
     if dup and not p["summa"]:
@@ -276,7 +580,7 @@ async def transh_flow(update: Update, ctx, text):
     return True
 
 
-@guard
+@need("transh_qoshish")
 async def transh(update: Update, ctx):
     if not await transh_flow(update, ctx, update.message.text):
         await update.message.reply_text("❌ Транш матни ўқилмади. Намуна учун /start")
@@ -285,6 +589,17 @@ async def transh(update: Update, ctx):
 @guard
 async def on_text(update: Update, ctx):
     text = update.message.text or ""
+    if ctx.user_data.get("await_admin_id") and is_admin(update):
+        m = re.fullmatch(r"\s*(\d{5,15})\s*", text)
+        if m:
+            ctx.user_data.pop("await_admin_id", None)
+            add_user(int(m.group(1)), "user", by=update.effective_user.id)
+            await update.message.reply_text(f"✅ {m.group(1)} фойдаланувчи сифатида қўшилди. Админ қилиш учун /admin.")
+            try:
+                await ctx.bot.send_message(int(m.group(1)), "✅ Сизга Gavhar назорат ботидан фойдаланишга рухсат берилди. /start ни босинг.")
+            except Exception:
+                pass
+            return
     aw = ctx.user_data.get("await_summa")
     if aw:
         m = re.fullmatch(r"\s*([\d\s.,]+)\s*(\$|доллар|доллор|usd)?\s*", text, re.I)
@@ -307,6 +622,8 @@ async def transh_cb(update: Update, ctx):
     if not allowed(update):
         return await q.answer("Рухсат йўқ", show_alert=True)
     await q.answer()
+    if not has_perm(update.effective_user.id, "transh_qoshish"):
+        return await q.edit_message_text("⛔ Сизда транш қўшиш рухсати йўқ.")
     p = ctx.user_data.pop("pending_transh", None)
     if q.data == "tr_no" or not p:
         return await q.edit_message_text("Бекор қилинди.")
@@ -321,7 +638,7 @@ async def transh_cb(update: Update, ctx):
     await run_and_reply(update, caption="Янги транш билан ҳисобот")
 
 
-@guard
+@need("transh_qoshish")
 async def yop(update: Update, ctx):
     a = ctx.args
     if len(a) < 2 or not a[0].isdigit():
@@ -340,7 +657,7 @@ async def yop(update: Update, ctx):
     await run_and_reply(update)
 
 
-@guard
+@need("transh_qoshish")
 async def och(update: Update, ctx):
     a = ctx.args
     if not a or not a[0].isdigit():
@@ -355,7 +672,7 @@ async def och(update: Update, ctx):
     await update.message.reply_text(f"Транш №{a[0]} қайта очилди.")
 
 
-@guard
+@need("transh_qoshish")
 async def chegara(update: Update, ctx):
     try:
         v = float(ctx.args[0].replace(",", "."))
@@ -381,10 +698,59 @@ async def bekor(update: Update, ctx):
     await run_and_reply(update)
 
 
-@guard
+@need("hisobot")
 async def reestr(update: Update, ctx):
     with open(LEDGER, "rb") as f:
         await update.message.reply_document(f, filename="gavhar_reestr.csv")
+
+
+RET_WORDS = ("возврат", "возрат", "vozvrat", "qaytar", "қайтар", "кайтар")
+
+
+def looks_like_returns(path, name):
+    if any(w in name.lower() for w in RET_WORDS):
+        return True
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        for ws in wb.worksheets:
+            if any(w in ws.title.lower() for w in RET_WORDS):
+                return True
+            for r in ws.iter_rows(max_row=6, values_only=True):
+                if any(w in str(c or "").lower() for c in r for w in RET_WORDS):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+@need("vozvrat_yuklash")
+async def vozvrat(update: Update, ctx):
+    ctx.user_data["vozvrat_mode"] = True
+    st = nazorat.returns_stats(nazorat.load_returns(str(VOZVRAT)))
+    await update.message.reply_text(
+        f"↩️ Ҳозир возврат рўйхатида: {st['n']} та товар ({st['summa']:,.0f} $).\n"
+        "Дўконлар возврат қилган товарлар Excel рўйхатини ташланг. Керакли устунлар: сана, дўкон, артикул/код, "
+        "товар номи, грамм, возврат суммаси (ёки 1 гр нархи).")
+
+
+async def handle_returns_file(update: Update, path, name):
+    try:
+        rows = await asyncio.to_thread(nazorat.read_returns, str(path))
+    except Exception as e:
+        log.exception("returns read error")
+        return await update.message.reply_text(f"❌ Возврат файлини ўқиб бўлмади: {e}")
+    if not rows:
+        return await update.message.reply_text(
+            "❌ Возврат рўйхати ўқилмади. Устунлар: «Товар номи» ёки «Артикул», «Грамм», «Сумма» (ёки «1 гр нархи»).")
+    async with LOCK:
+        backup(VOZVRAT)
+        added, dup = nazorat.add_returns(str(VOZVRAT), rows)
+    await update.message.reply_text(
+        f"↩️ Возврат рўйхати: {added} та товар қўшилди ({sum(r['gramm'] for r in rows):,.2f} гр, "
+        f"{sum(r['summa'] for r in rows):,.2f} $), такрорий: {dup}.\n"
+        "Энди фактурада возврат нархида келган товарлар «возврат товар берилган» деб белгиланади. Барча фактуралар қайта текширилди:")
+    await run_and_reply(update, caption=f"Ҳисобот — возврат қўшилгандан кейин")
 
 
 @guard
@@ -397,8 +763,16 @@ async def document(update: Update, ctx):
         path = Path(td) / name
         f = await doc.get_file()
         await f.download_to_drive(path)
+        uid = update.effective_user.id
+        if ctx.user_data.pop("vozvrat_mode", False) or await asyncio.to_thread(looks_like_returns, str(path), name):
+            if not has_perm(uid, "vozvrat_yuklash"):
+                return await update.message.reply_text(f"⛔ Сизда рухсат йўқ: {PERMS['vozvrat_yuklash']}.")
+            return await handle_returns_file(update, path, name)
+        if not has_perm(uid, "faktura_yuklash"):
+            return await update.message.reply_text(f"⛔ Сизда рухсат йўқ: {PERMS['faktura_yuklash']}.")
         # юкламадан олдинги реестр нусхаси — /bekor учун
         stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        BACKUP.mkdir(parents=True, exist_ok=True)
         bk = BACKUP / f"ledger_{stamp}.csv"
         shutil.copy(LEDGER, bk)
         try:
@@ -408,8 +782,8 @@ async def document(update: Update, ctx):
             return await update.message.reply_text(f"❌ Файлни ўқиб бўлмади: {e}")
         if not rows:
             return await update.message.reply_text(
-                "❌ Файлда Gavhar қаторлари топилмади. Керакли устунлар: «Товар номи», «Товар категорияси», "
-                "«Нарх» ёки «Қиймати», «Таъминотчи фактура санаси».")
+                "❌ Файлда Gavhar фактура қаторлари топилмади.\n"
+                "Бу возврат рўйхати бўлса — аввал /vozvrat ёзинг, кейин файлни ташланг.")
         await run_and_reply(update, files=[str(path)], caption=f"Ҳисобот — {name}")
         if filecmp.cmp(bk, LEDGER, shallow=False):
             bk.unlink()  # ҳеч нарса қўшилмади — бекор қилиш нуқтаси ўзгармайди
@@ -417,31 +791,40 @@ async def document(update: Update, ctx):
             (DATA / "last_backup.txt").write_text(str(bk))
 
 
-@guard
+@admin_only
 async def tozalash(update: Update, ctx):
     cfg = load_cfg()
     n_tr = len(cfg["transhlar"])
     n_rows = len(nazorat.load_ledger(str(LEDGER)))
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗑 Ҳаммасини ўчириш (транш + фактура)", callback_data="rs_all")],
+        [InlineKeyboardButton("🗑 Ҳаммасини ўчириш (транш + фактура + возврат)", callback_data="rs_all")],
         [InlineKeyboardButton("🧾 Фақат фактураларни ўчириш", callback_data="rs_inv")],
+        [InlineKeyboardButton("↩️ Фақат возврат рўйхатини ўчириш", callback_data="rs_ret")],
         [InlineKeyboardButton("❌ Бекор", callback_data="rs_no")]])
     await update.message.reply_text(
-        f"Ҳозир базада: {n_tr} та транш, {n_rows} та фактура қатори.\n\n"
+        f"Ҳозир базада: {n_tr} та транш, {n_rows} та фактура қатори, "
+        f"{len(nazorat.load_returns(str(VOZVRAT)))} та возврат.\n\n"
         "Нимани ўчирай? (ўчиришдан олдин нусха сақланади)", reply_markup=kb)
 
 
 async def tozalash_cb(update: Update, ctx):
     q = update.callback_query
-    if not allowed(update):
-        return await q.answer("Рухсат йўқ", show_alert=True)
+    if not is_admin(update):
+        return await q.answer("Фақат админлар учун", show_alert=True)
     await q.answer()
     if q.data == "rs_no":
         return await q.edit_message_text("Бекор қилинди. Ҳеч нарса ўчирилмади.")
+    if q.data == "rs_ret":
+        async with LOCK:
+            backup(VOZVRAT)
+            nazorat.save_returns(str(VOZVRAT), [])
+        return await q.edit_message_text("✅ Возврат рўйхати ўчирилди. Янги рўйхатни /vozvrat орқали ташланг.")
     async with LOCK:
         backup(LEDGER)
         nazorat.save_ledger(str(LEDGER), [])
         if q.data == "rs_all":
+            backup(VOZVRAT)
+            nazorat.save_returns(str(VOZVRAT), [])
             cfg = load_cfg()
             cfg["transhlar"] = []
             save_cfg(cfg)  # save_cfg ўзи нусха олади
@@ -454,6 +837,28 @@ async def tozalash_cb(update: Update, ctx):
             "Кейин фактураларни ташлайверасиз.")
     else:
         await q.edit_message_text("✅ Фактуралар ўчирилди, траншлар қолди. Фактураларни қайтадан ташлашингиз мумкин.")
+
+
+@need("hisobot")
+async def xatolar_cmd(update: Update, ctx):
+    """/xatolar — ҳамма хатоликлар Excel да. /xatolar GVR-27102026 — битта фактура бўйича."""
+    arg = " ".join(ctx.args or []).strip()
+    async with LOCK:
+        cfg = load_cfg()
+        rets = nazorat.load_returns(str(VOZVRAT))
+        rows, _ = nazorat.compute(cfg, nazorat.load_ledger(str(LEDGER)), rets)
+    if arg:
+        rows = [r for r in rows if arg.lower() in f"{r['faktura']} {r['filial']}".lower()]
+    bad = [r for r in rows if str(r.get("holat", "")).startswith("⚠")]
+    if not bad:
+        return await update.message.reply_text("✅ Хатолик йўқ" + (f" ({arg})" if arg else "") + ".")
+    with tempfile.TemporaryDirectory() as td:
+        nm = f"Xatoliklar_{re.sub(r'[^\w-]+', '_', arg)[:40] or 'barchasi'}_{dt.date.today():%Y-%m-%d}.xlsx"
+        out = Path(td) / nm
+        st = await asyncio.to_thread(nazorat.write_errors_report, str(out), rows, f"Фильтр: {arg or 'барча хатоликлар'}", rets)
+        with open(out, "rb") as f:
+            await update.message.reply_document(f, filename=nm,
+                                                caption=f"⚠ Хатоликлар: {st['n']} позиция, {st['faktura']} фактура, фарқ {st['farq']:+,.2f} $")
 
 
 async def on_error(update, ctx):
