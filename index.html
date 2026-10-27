@@ -59,6 +59,7 @@ tr:last-child td{border-bottom:0}
 .skel{height:96px;border-radius:16px;background:var(--card);opacity:.6;margin-bottom:10px}
 .filt{display:flex;align-items:center;justify-content:space-between;background:var(--card);border-radius:12px;padding:8px 12px;margin-bottom:10px;font-size:13px}
   .trl{margin-top:6px;font-size:12px;color:var(--mut)}
+  .vq{margin-top:8px;padding:8px 10px;border-radius:10px;background:var(--bg2,rgba(52,199,89,.08))}
 </style>
 </head>
 <body>
@@ -334,6 +335,16 @@ function invCard(a) {
       <table><tr><th>Tur</th><th>Gr</th><th>Faktura</th><th>Kerak</th><th>Farq</th></tr>
       ${a.turlar.map(t => `<tr><td>${E(t.tur)} <span class="mut">×${t.n}</span></td><td>${fmt(t.gramm, 2)}</td><td>${fmt(t.fakt_1gr, 2)}</td><td>${fmt(t.hisob_1gr, 2)}</td>
         <td class="${t.bad && t.farq > 0 ? 'red' : t.bad ? '' : 'mut'}">${t.bad ? sgn(t.farq) : '—'}</td></tr>`).join('')}</table>
+      ${(a.xulosa || []).length ? `<div class="sec" style="margin:12px 0 6px">Tekshiruv</div>
+        ${a.xulosa.map(x => `<div style="font-size:13px;margin-top:4px">${E(L(x))}</div>`).join('')}` : ''}
+      ${(a.vlist || []).length ? `<div class="sec" style="margin:12px 0 6px">↩ Vozvrat bilan to'g'rilangan · ${a.vlist.length} ta</div>
+        ${[...new Set(a.vlist.map(v => v.qism))].sort().map(qn => { const vs = a.vlist.filter(v => v.qism === qn);
+          return `<div class="vq"><b>${qn}-qism</b> <span class="mut">${qn === 1 ? "vozvrat ro'yxati" : 'summa bo\'yicha'} · ${vs.length} ta · ${usd(vs.reduce((s, v) => s + (v.summa || 0), 0), 2)}</span>
+            ${qn === 1 ? vs.slice(0, 30).map(v => `<div class="mut" style="font-size:12px;margin-top:3px">• ${L(v.tur)} ${fmt(v.gramm, 2)} gr × ${fmt(v.narx, 2)} — ${E(L(v.manba.split(': ').slice(1).join(': ') || v.manba))}</div>`).join('')
+              + (vs.length > 30 ? `<div class="mut" style="font-size:12px">… yana ${vs.length - 30} ta</div>` : '')
+              : `<div class="mut" style="font-size:12px;margin-top:3px">${E(L((vs[0].manba.match(/\(([^)]*)\)/) || [, ''])[1]))}</div>`
+                + Object.values(vs.reduce((m, v) => { const k = v.tur; (m[k] = m[k] || {tur: v.tur, n: 0, g: 0, narx: v.narx}); m[k].n++; m[k].g += v.gramm || 0; return m; }, {}))
+                  .sort((a, b) => b.g - a.g).map(t => `<div class="mut" style="font-size:12px;margin-top:3px">• ${L(t.tur)}: ${t.n} ta · ${fmt(t.g, 2)} gr × ${fmt(t.narx, 2)} $ — vozvrat narxiga mos</div>`).join('')}</div>`; }).join('')}` : ''}
       <div class="rw" style="margin-top:8px"><span class="mut">Hisob bo'yicha ${usd(a.hisob, 2)}</span>
         ${a.bad ? `<span class="rw" style="gap:6px">${can('hisobot') ? `<button class="btn2" onclick="xatoExcel({faktura:'${esc(a.faktura)}'}, this)">📑 Excel</button>` : ''}
           <button class="btn2" onclick="xatoByFaktura('${esc(a.faktura)}')">${a.bad} ta xatolik ›</button></span>` : ''}</div>
@@ -484,7 +495,7 @@ function newForm(prev) {
     } catch (e) { toast(e.message); }
   };
   $('#nsave').onclick = async () => {
-    try { const r = await api('/api/transh', body()); haptic('success'); toast(`Transh №${r.no} saqlandi`); dropSub('newform'); invalidate(); loadTransh(); }
+    try { const r = await api('/api/transh', body()); haptic('success'); toast(r.qoshildi ? `Transh №${r.no} ga qo'shildi → ${fmt(r.jami)} $` : `Transh №${r.no} saqlandi`); dropSub('newform'); invalidate(); loadTransh(); }
     catch (e) { toast(e.message); }
   };
 }

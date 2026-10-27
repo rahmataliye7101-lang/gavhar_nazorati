@@ -457,6 +457,8 @@ NUM = r"(\d+(?:[.,]\d+)?)"
 
 
 def parse_transh(text: str):
+    # бир қаторга ёзилган бўлса: «… 137.92$ Лом нархи 80.76$ Бриллиант …» → ҳар нарх алоҳида қатор
+    text = re.sub(r"(\d)\s*\$?[ \t]+(?=[^\d\s$])", r"\1\n", text or "")
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     lines = [l for l in lines if not l.startswith("/transh")]
     res = {"sana": None, "birja": None, "lom": None, "summa": None, "narxlar": {}}
@@ -467,7 +469,10 @@ def parse_transh(text: str):
             g = m.groups()
             d = dt.date(int(g[0]), int(g[1]), int(g[2])) if len(g[0]) == 4 else dt.date(int(g[2]), int(g[1]), int(g[0]))
             res["sana"] = d.isoformat()
-            continue
+            l = (l[:m.start()] + " " + l[m.end():]).strip()
+            low = l.lower().replace("ё", "е")
+            if not l:
+                continue
         nums = [float(x.replace(",", ".")) for x in re.findall(NUM, l.replace(" ", ""))]
         if not nums:
             continue
@@ -552,30 +557,86 @@ async def narxlar(update: Update, ctx):
 
 
 async def confirm_transh(update: Update, ctx, p):
+    """Транш ёки возврат қисмини ДАРҲОЛ сақлайди (тасдиқ сўрамайди). Хато бўлса «↩️ Бекор қилиш» тугмаси."""
     cfg = load_cfg()
     errs, notes = check_transh(p, cfg)
     if errs:
         return await update.effective_message.reply_text("❌ Тушунмадим: " + "; ".join(errs) + ".\nGavhar нарх хабарини тўлиқ forward қилинг.")
-    ctx.user_data["pending_transh"] = p
-    if p.get("vozvrat"):
-        no = max((q["no"] for q in cfg.get("vozvrat_qismlar", [])), default=1) + 1
-        text = (f"↩️ Возврат {no}-қисм\n💵 {p['summa']:,.0f} $ · биржа {p['birja']}\n\n1 гр нархлари:\n"
-                + "\n".join(f"• {n}: {v:.2f} $" for n, v in p["narxlar"].items())
-                + "\n\nФактурада шу нархда келган товарлар (шу сумма тугагунча) возврат деб ҳисобланади.\nСақлайми?")
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Сақлаш", callback_data="tr_ok"),
-                                    InlineKeyboardButton("❌ Бекор", callback_data="tr_no")]])
-        return await update.effective_message.reply_text(text, reply_markup=kb)
-    no = max((t["no"] for t in cfg["transhlar"]), default=0) + 1
     sana = nazorat._dmy(p["sana"]) if p.get("sana") else "—"
-    text = (f"💳 Янги транш №{no}\n📅 {sana} · 💵 {p['summa']:,.0f} $ · биржа {p['birja']}\n" + "\n".join(notes)
-            + "\n\nСақлайми?")
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Сақлаш", callback_data="tr_ok"),
-                                InlineKeyboardButton("❌ Бекор", callback_data="tr_no")]])
-    await update.effective_message.reply_text(text, reply_markup=kb)
+    async with LOCK:
+        cfg = load_cfg()
+        if p.get("vozvrat"):
+            vq = cfg.setdefault("vozvrat_qismlar", [])
+            dup = next((q for q in vq if abs(q["birja"] - p["birja"]) < 0.005), None)
+            if dup:
+                dup["summa_usd"] += p["summa"]
+                undo, head = f"tr_undo:vq:{dup['no']}:{p['summa']}", (
+                    f"↩️ Возврат {dup['no']}-қисмга {p['summa']:,.0f} $ қўшилди → жами {dup['summa_usd']:,.0f} $")
+            else:
+                no = max((q["no"] for q in vq), default=1) + 1
+                vq.append({"no": no, "sana": p["sana"], "summa_usd": p["summa"], "birja": p["birja"],
+                           "narxlar": p["narxlar"], "manba": f"Telegram бот, {dt.date.today()}"})
+                undo, head = f"tr_undo:vqnew:{no}:0", f"↩️ Возврат {no}-қисм қўшилди: {p['summa']:,.0f} $ · биржа {p['birja']}"
+            body = "\n".join(f"• {n}: {v:.2f} $" for n, v in p["narxlar"].items())
+        else:
+            dup = next((t for t in cfg["transhlar"] if t["sana"] == p["sana"] and abs(t["birja_999"] - p["birja"]) < 0.005), None)
+            if dup:
+                dup["summa_usd"] += p["summa"]
+                undo, head = f"tr_undo:tr:{dup['no']}:{p['summa']}", (
+                    f"💳 Транш №{dup['no']} ({sana}) га {p['summa']:,.0f} $ қўшилди → жами {dup['summa_usd']:,.0f} $")
+                body = "Нархлар ўзгармади (ўша транш нархлари)."
+            else:
+                no = max((t["no"] for t in cfg["transhlar"]), default=0) + 1
+                cfg["transhlar"].append({"no": no, "sana": p["sana"], "summa_usd": p["summa"], "birja_999": p["birja"],
+                                         "narxlar": p["narxlar"], "manba": f"Telegram бот, {dt.date.today()}", "yopilgan_sana": None})
+                cfg["transhlar"].sort(key=lambda t: t["sana"])
+                undo, head = f"tr_undo:trnew:{no}:0", f"💳 Янги транш №{no} қўшилди\n📅 {sana} · 💵 {p['summa']:,.0f} $ · биржа {p['birja']}"
+                body = "\n".join(notes)
+        save_cfg(cfg)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Бекор қилиш", callback_data=undo)]])
+    await update.effective_message.reply_text(f"✅ {head}\n{body}", reply_markup=kb)
+    await run_and_reply(update)
+
+
+DATE_RE = re.compile(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{4}\b|\b\d{4}-\d{2}-\d{2}\b")
+
+
+def split_transh_text(text):
+    """Битта хабарда бир нечта транш бўлса (ҳар бири ўз санаси билан) — бўлакларга ажратади."""
+    pos = [m.start() for m in DATE_RE.finditer(text or "")]
+    if len(pos) < 2:
+        return [text]
+    parts = [text[a:b] for a, b in zip(pos, pos[1:] + [len(text)])]
+    parts[0] = text[:pos[0]] + parts[0]  # биринчи санагача ёзилган сўзлар (мас. «Возврат») биринчи бўлакка
+    ok = [p for p in parts if (lambda q: q["birja"] and len(q["narxlar"]) >= 2)(parse_transh(p))]
+    return ok if len(ok) >= 2 else [text]
 
 
 async def transh_flow(update: Update, ctx, text):
-    """Матндан транш (пул + нархлар) ўқиш. Транш матни бўлмаса False қайтаради."""
+    """Матндан транш(лар) ўқиш. Бир хабарда бир нечта транш бўлса — ҳар бирини санаси бўйича алоҳида қўшади."""
+    blocks = split_transh_text(text or "")
+    if len(blocks) == 1:
+        return await transh_flow_one(update, ctx, text)
+    ps = [parse_transh(b) for b in blocks]
+    if not has_perm(update.effective_user.id, "transh_qoshish"):
+        await update.effective_message.reply_text(f"⛔ Сизда бу учун рухсат йўқ: {PERMS['transh_qoshish']}.")
+        return True
+    miss = [nazorat._dmy(p["sana"]) for p in ps if not p["summa"]]
+    if miss:
+        await update.effective_message.reply_text(
+            f"ℹ️ Хабарда {len(ps)} та транш бор, лекин {', '.join(miss)} учун сумма йўқ.\n"
+            "Ҳар бир санадан кейин «Сумма 707739» деб ёзинг ёки траншларни алоҳида-алоҳида юборинг.")
+        return True
+    await update.effective_message.reply_text(
+        f"📥 Хабарда {len(ps)} та транш топилди: " + ", ".join(f"{nazorat._dmy(p['sana'])} — {p['summa']:,.0f} $" for p in ps)
+        + ".\nСанаси бўйича навбат билан қўшаман (олдин эскиси).")
+    for b in sorted(blocks, key=lambda b: parse_transh(b)["sana"] or ""):
+        await transh_flow_one(update, ctx, b)
+    return True
+
+
+async def transh_flow_one(update: Update, ctx, text):
+    """Матндан битта транш (пул + нархлар) ўқиш. Транш матни бўлмаса False қайтаради."""
     p = parse_transh(text or "")
     if not p["birja"] or len(p["narxlar"]) < 2:
         return False
@@ -590,8 +651,8 @@ async def transh_flow(update: Update, ctx, text):
     if dup and not p["summa"] and not p["vozvrat"]:
         ctx.user_data["await_summa"] = p
         await update.effective_message.reply_text(
-            f"ℹ️ Бу нархлар олдин сақланган (Транш №{dup['no']}, {nazorat._dmy(dup['sana'])}, {dup['summa_usd']:,.0f} $).\n"
-            "Шу нархда яна пул берган бўлсангиз — суммасини ёзинг (масалан: 150000).")
+            f"ℹ️ Бу нархлар Транш №{dup['no']} да бор ({nazorat._dmy(dup['sana'])}, {dup['summa_usd']:,.0f} $).\n"
+            "Шу нархда яна пул берган бўлсангиз — суммасини ёзинг (масалан: 150000), шу траншга қўшиб қўяман.")
         return True
     if not p["summa"]:
         ctx.user_data["await_summa"] = p
@@ -647,6 +708,26 @@ async def transh_cb(update: Update, ctx):
     await q.answer()
     if not has_perm(update.effective_user.id, "transh_qoshish"):
         return await q.edit_message_text("⛔ Сизда транш қўшиш рухсати йўқ.")
+    if q.data.startswith("tr_undo:"):
+        _, kind, no, amt = q.data.split(":")
+        no, amt = int(no), float(amt)
+        async with LOCK:
+            cfg = load_cfg()
+            if kind in ("tr", "trnew"):
+                lst = cfg["transhlar"]
+                t = next((t for t in lst if t["no"] == no), None)
+            else:
+                lst = cfg.setdefault("vozvrat_qismlar", [])
+                t = next((x for x in lst if x["no"] == no), None)
+            if not t:
+                return await q.edit_message_text(q.message.text + "\n\n(аллақачон бекор қилинган)")
+            if kind.endswith("new"):
+                lst.remove(t)
+            else:
+                t["summa_usd"] -= amt
+            save_cfg(cfg)
+        await q.edit_message_text(q.message.text + "\n\n↩️ Бекор қилинди.")
+        return await run_and_reply(update)
     p = ctx.user_data.pop("pending_transh", None)
     if q.data == "tr_no" or not p:
         return await q.edit_message_text("Бекор қилинди.")

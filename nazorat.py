@@ -498,7 +498,9 @@ def compute(cfg, ledger, returns=None):
                 r1 = float(ret["summa"]) / float(ret["gramm"])
                 exp = r1 * g
                 r.update(transh="возврат", hisob=exp, hisob_1gr=r1, fakt_1gr=s / g, farq_gr=s / g - r1, farq=s - exp,
-                         holat="✓ возврат товар",
+                         holat="✓ возврат товар", vozvrat_qism=1,
+                         vozvrat_manba=(f"1-қисм (рўйхат): {ret.get('filial') or '—'} дўкони {_dmy(ret.get('sana'))} да қайтарган"
+                                        + (f", арт. {ret.get('kod')}" if ret.get('kod') else "") + f", {r1:.2f} $/гр"),
                          izoh=(f"Возврат товар: {ret.get('filial') or '—'} дан {_dmy(ret.get('sana'))} да {r1:.2f} $ дан қайтарилган — "
                                f"шу нархда берилди, тўғри."))
                 out.append(r)
@@ -509,7 +511,9 @@ def compute(cfg, ledger, returns=None):
                 if pq and abs(s / g - pq) <= chegara and q["summa_usd"] - q["_used"] >= s - 1:
                     q["_used"] += s; q["_n"] += 1
                     exp = pq * g
-                    r.update(transh="возврат", vozvrat_qism=q["no"], hisob=exp, hisob_1gr=pq, fakt_1gr=s / g, farq_gr=s / g - pq,
+                    r.update(transh="возврат", vozvrat_qism=q["no"],
+                             vozvrat_manba=f"{q['no']}-қисм (сумма {q['summa_usd']:,.0f} $, биржа {q['birja']}): «{r['tur']}» нархи {pq:.2f} $/гр",
+                             hisob=exp, hisob_1gr=pq, fakt_1gr=s / g, farq_gr=s / g - pq,
                              farq=s - exp, holat="✓ возврат товар",
                              izoh=f"Возврат товар ({q['no']}-қисм, биржа {q['birja']} нархида): 1 гр {pq:.2f} $ — тўғри.")
                     out.append(r)
@@ -539,9 +543,14 @@ def compute(cfg, ledger, returns=None):
             r["farq"] = s - cost
             if abs(r["farq_gr"]) <= chegara:
                 r["holat"] = "✓ тўғри"
+                r["izoh"] = togri_izoh(parts, tr)
             else:
                 r["holat"] = "⚠ ҚИММАТ" if r["farq_gr"] > 0 else "⚠ арзон"
                 r["izoh"] = sabab(r, tr, parts)
+                pp = [x for x in parts if x[0] != "пул етмади"]
+                if len(pp) > 1:
+                    r["izoh"] = (f"{pp[0][0]}-пул шу товарда тугаб, {pp[-1][0]}-пулга ўтди — тўғри нарх аралаш: "
+                                 + " + ".join(f"{gg:.2f} гр × {p_:.2f}" for _, gg, p_ in pp) + f" = {cost / g:.2f} $/гр.")
                 if r.get("_pool_hint"):
                     r["izoh"] = r.pop("_pool_hint")
                 if r.get("_ret_hint"):
@@ -561,6 +570,54 @@ def compute(cfg, ledger, returns=None):
         trs.append(dict(no=t["no"], sana=t["sana"], summa=t["summa_usd"], birja=t["birja_999"],
                         used=used[ti], left=left[ti], holat=holat, birinchi=first_date[ti], oxirgi=last_date[ti]))
     return out, trs
+
+
+def togri_izoh(parts, tr):
+    """Тўғри қатор учун изоҳ: қайси пул (транш) нархида тўғри."""
+    dm = {t["no"]: _dmy(t["sana"]) for t in tr}
+    pp = [x for x in parts if x[0] != "пул етмади"]
+    if not pp:
+        return "Пул етмади — охирги транш нархида ҳисобланди."
+    if len(pp) == 1:
+        n, _, p = pp[0]
+        return f"{n}-пул ({dm.get(n, '')}) нархида тўғри: {p:.2f} $/гр."
+    a, b = pp[0], pp[-1]
+    return (f"{a[0]}-пул тугади, {b[0]}-пулга ўтди: " + " + ".join(f"{gg:.2f} гр × {p:.2f} ({n}-пул)" for n, gg, p in pp)
+            + " — тўғри.")
+
+
+def faktura_xulosa(rs, tmap):
+    """Фактура бўйича қисқа текширув: қайси пулда тўғри, пул алмашдими, возврат берилдими."""
+    L = []
+    rv = [r for r in rs if r.get("transh") == "возврат"]
+    by_tr = OrderedDict()
+    for r in rs:
+        if r.get("transh") == "возврат":
+            continue
+        ns = tuple(int(x) for x in re.findall(r"№(\d+)", str(r.get("transh") or "")))
+        by_tr.setdefault(ns, []).append(r)
+    prev_n = None
+    for ns, grp_ in sorted(by_tr.items(), key=lambda kv: kv[0]):
+        if not ns:
+            continue
+        okn = sum(1 for r in grp_ if r["holat"].startswith("✓"))
+        badn = len(grp_) - okn
+        if prev_n is not None and ns[0] != prev_n:
+            L.append(f"🔁 {prev_n}-пул тугади → {ns[0]}-пулга ўтди")
+        if len(ns) > 1:
+            L.append(f"🔁 {ns[0]}-пул тугади → {ns[-1]}-пулга ўтди ({len(grp_)} та товар иккала пул нархида)")
+        t0 = tmap.get(ns[-1], {})
+        nom = f"{ns[0]}+{ns[-1]}-пул" if len(ns) > 1 else f"{ns[0]}-пул ({_dmy(t0.get('sana'))}, биржа {t0.get('birja_999')})"
+        if okn:
+            L.append(f"✅ {okn} та товар — {nom} нархида тўғри")
+        if badn:
+            L.append(f"❌ {badn} та товар — {nom} нархига тўғри келмади")
+        prev_n = ns[-1]
+    if rv:
+        r1n = sum(1 for r in rv if (r.get("vozvrat_qism") or 1) == 1)
+        L.append(f"↩️ {len(rv)} та товар — возврат товар берилди, возврат нархида тўғри"
+                 + (f" (рўйхатдан {r1n}, {len(rv) - r1n} таси сумма бўйича)" if 0 < r1n < len(rv) else ""))
+    return L
 
 
 def _dmy(iso):
@@ -845,7 +902,7 @@ def write_errors_report(path, rows, title="", returns=None):
     return dict(n=len(bad), farq=sum(r.get("farq") or 0 for r in bad), faktura=len(inv))
 
 
-def write_invoice_report(path, fno, fil, sana_t, rs, trn):
+def write_invoice_report(path, fno, fil, sana_t, rs, trn, tmap=None):
     """Битта фактура (дўкон) бўйича текширув Excel и."""
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment
@@ -861,13 +918,24 @@ def write_invoice_report(path, fno, fil, sana_t, rs, trn):
     head = [("Фактура", fno), ("Дўкон (филиал)", fil), ("Сана", sana_t), ("Транш", ", ".join(trn) or "—"),
             ("Позиция", len(rs)), ("Грамм", round(sum(r["gramm"] for r in rs), 2)), ("Фактура суммаси, $", round(fakt, 2)),
             ("Керакли сумма, $", round(hisob, 2)), ("Фарқ, $", round(farq, 2)),
+            ("Возврат билан тўғриланди", "; ".join(
+                f"{qn}-қисм: {sum(1 for r in rs if r.get('transh') == 'возврат' and (r.get('vozvrat_qism') or 1) == qn)} та" for qn in
+                sorted({r.get("vozvrat_qism") or 1 for r in rs if r.get("transh") == "возврат"})) or "—"),
             ("ХУЛОСА", "✅ ТЎҒРИ" if not nb else f"❌ ХАТО БОР — {len(nb)} та позиция, {farq:+,.2f} $")]
     for i, (k, v) in enumerate(head, 1):
         ws.cell(i, 1, k).font = Font(name=F, bold=True)
         c = ws.cell(i, 2, v)
         c.font = Font(name=F, bold=k == "ХУЛОСА", color=("C00000" if (k == "ХУЛОСА" and nb) else "1E7B3C" if k == "ХУЛОСА" else "000000"))
+    xl = faktura_xulosa(rs, tmap or {})
+    if xl:
+        r0 = len(head) + 2
+        ws.cell(r0, 1, "ТЕКШИРУВ").font = Font(name=F, bold=True)
+        for k, line in enumerate(xl):
+            c = ws.cell(r0 + 1 + k, 1, line)
+            c.font = Font(name=F, color=("C00000" if line.startswith("❌") else "1E7B3C" if line[:1] in "✅↩" else "7F6000"))
+        head = head + [None] * (len(xl) + 2)
     start = len(head) + 2
-    hdr = ["№", "Артикул / код", "Товар номи", "Тур", "Грамм", "Фактура $/гр", "Керак $/гр", "Фарқ $/гр", "Фактура $", "Керак $", "Фарқ $", "Ҳолати", "Изоҳ"]
+    hdr = ["№", "Артикул / код", "Товар номи", "Тур", "Грамм", "Фактура $/гр", "Керак $/гр", "Фарқ $/гр", "Фактура $", "Керак $", "Фарқ $", "Ҳолати", "Изоҳ", "Қайси возврат"]
     for j, h in enumerate(hdr, 1):
         c = ws.cell(start, j, h)
         c.font = Font(name=F, bold=True, color="FFFFFF")
@@ -876,7 +944,7 @@ def write_invoice_report(path, fno, fil, sana_t, rs, trn):
     red, green = PatternFill("solid", fgColor="F8CBAD"), PatternFill("solid", fgColor="E2EFDA")
     for i, r in enumerate(sorted(rs, key=lambda r: (not r["holat"].startswith("⚠"), -abs(r.get("farq") or 0))), 1):
         vals = [i, r["kod"], r["nomi"], r["tur"], r["gramm"], r.get("fakt_1gr"), r.get("hisob_1gr"), r.get("farq_gr"), r["summa"],
-                r.get("hisob"), r.get("farq"), r["holat"], r.get("izoh")]
+                r.get("hisob"), r.get("farq"), r["holat"], r.get("izoh"), r.get("vozvrat_manba") or ""]
         for j, v in enumerate(vals, 1):
             c = ws.cell(start + i, j, v)
             c.font = Font(name=F)
@@ -884,8 +952,10 @@ def write_invoice_report(path, fno, fil, sana_t, rs, trn):
                 c.number_format = "0.00"
             if j in (9, 10, 11):
                 c.number_format = "#,##0.00"
+            if j in (13, 14):
+                c.alignment = Alignment(wrap_text=True, vertical="top")
         ws.cell(start + i, 12).fill = red if r["holat"].startswith("⚠") else green
-    for j, w in enumerate([5, 12, 45, 11, 8, 11, 11, 10, 11, 11, 10, 16, 70], 1):
+    for j, w in enumerate([5, 12, 45, 11, 8, 11, 11, 10, 11, 11, 10, 16, 70, 55], 1):
         ws.column_dimensions[get_column_letter(j)].width = w
     ws.column_dimensions["A"].width = 18
     ws.freeze_panes = ws.cell(start + 1, 1)
@@ -909,9 +979,11 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
             ledger.append(r)
             new_rows.append(r)
             added += 1
-    if added:
-        save_ledger(ledger_path, ledger)
     returns = load_returns(returns_path)
+    trs_old = None
+    if added:
+        _, trs_old = compute(cfg, ledger[:len(ledger) - added], returns)
+        save_ledger(ledger_path, ledger)
     rows, trs = compute(cfg, ledger, returns)
     s = write_report(out_path, cfg, rows, trs, returns)
 
@@ -946,16 +1018,27 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
             L.append("━━━━━━━━━━━━━━━")
             L.append(f"🧾 {fno or '—'} · {fil or '—'} · {sana_t}")
             L.append(f"   {len(rs)} та товар · {sum(r['gramm'] for r in rs):,.2f} гр")
-            L.append(f"💳 {tline} нархида текширилди" if tline else
-                     ("💳 Ҳаммаси возврат товар — возврат нархида текширилди" if rv and len(rv) == len(rs) else "💳 Транш топилмади"))
+            L.append("Текширув:")
+            L += faktura_xulosa(rs, tmap)
             if rv:
-                r1 = [r for r in rv if not r.get("vozvrat_qism")]
-                r2_ = [r for r in rv if r.get("vozvrat_qism")]
-                if r1:
-                    L.append(f"↩️ {len(r1)} та товар возврат рўйхатидан — возврат нархида, тўғри")
-                if r2_:
-                    L.append(f"↩️ {len(r2_)} та товар ({sum(r['summa'] or 0 for r in r2_):,.2f} $) возврат 2-қисмдан — "
-                             f"возврат нархида, тўғри")
+                L.append(f"\n↩️ Возврат тафсилоти:")
+                for qn in sorted({r.get("vozvrat_qism") or 1 for r in rv}):
+                    qr = [r for r in rv if (r.get("vozvrat_qism") or 1) == qn]
+                    if qn == 1:
+                        L.append(f"   1-қисм (возврат рўйхати) — {len(qr)} та, {sum(r['summa'] or 0 for r in qr):,.2f} $:")
+                        for r in qr[:6]:
+                            L.append(f"     • {r['tur']} {r['gramm']:.2f} гр — {r.get('vozvrat_manba', '').split(': ', 1)[-1]}")
+                        if len(qr) > 6:
+                            L.append(f"     • ... яна {len(qr) - 6} та (Excel да)")
+                    else:
+                        q0 = next((q for q in cfg.get("vozvrat_qismlar", []) if q["no"] == qn), {})
+                        L.append(f"   {qn}-қисм (сумма бўйича, биржа {q0.get('birja')}) — {len(qr)} та, {sum(r['summa'] or 0 for r in qr):,.2f} $:")
+                        bt = OrderedDict()
+                        for r in qr:
+                            b_ = bt.setdefault(r["tur"], [0, 0.0, r.get("hisob_1gr") or 0])
+                            b_[0] += 1; b_[1] += r["gramm"] or 0
+                        for tn, (cnt, gr, pr) in sorted(bt.items(), key=lambda kv: -kv[1][1]):
+                            L.append(f"     • {tn}: {cnt} та, {gr:.2f} гр × {pr:.2f} $ — возврат нархига мос")
             if not nb:
                 L.append(f"\n✅ ТЎҒРИ. Фактура {fakt:,.2f} $ — нархлар тўғри.")
             else:
@@ -989,7 +1072,7 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
                     L.append("\nСабаб: " + ". ".join(sab[:3]) + ".")
             try:
                 safe = re.sub(r"[^\w\-]+", "_", f"{fno}_{fil}").strip("_")[:60] or "faktura"
-                write_invoice_report(str(Path(out_path).with_name(f"Faktura_{safe}.xlsx")), fno, fil, sana_t, rs, trn)
+                write_invoice_report(str(Path(out_path).with_name(f"Faktura_{safe}.xlsx")), fno, fil, sana_t, rs, trn, tmap)
             except Exception as e:  # ҳисобот ёзилмаса ҳам матн чиқсин
                 L.append(f"   (фактура Excel ёзилмади: {e})")
     if warns:
@@ -997,6 +1080,17 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
     if new_res:
         act = next((t for t in trs if t["holat"] in ("Фаол", "Ишлатилмаган")), None)
         L.append("━━━━━━━━━━━━━━━")
+        if trs_old:
+            old_left = {t["no"]: t["left"] for t in trs_old}
+            for t in trs:
+                ol = old_left.get(t["no"], t["summa"])
+                if ol > 1 and t["left"] <= 1:
+                    nxt = next((x for x in trs if x["sana"] > t["sana"] and x["left"] > 1), None)
+                    L.append(f"🔔 Транш №{t['no']} ({_dmy(t['sana'])}) пули шу фактурада тугади."
+                             + (f" Қолган товарлар Транш №{nxt['no']} ({_dmy(nxt['sana'])}) нархида текширилди." if nxt else
+                                " Бошқа транш йўқ — янги пул киритинг!"))
+                elif t["summa"] and ol / t["summa"] > 0.1 >= t["left"] / t["summa"] and t["left"] > 1:
+                    L.append(f"⚠ Транш №{t['no']} да фақат {t['left']:,.0f} $ қолди ({t['left'] / t['summa'] * 100:.0f}%).")
         if act:
             L.append(f"💰 Жорий транш №{act['no']} ({_dmy(act['sana'])}): қолдиқ {act['left']:,.0f} $ (ишлатилди {act['used']:,.0f} $)")
         L.append(f"💰 Gavhar да жами қолдиқ: {s['left']:,.0f} $")

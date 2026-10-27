@@ -101,7 +101,17 @@ def row_json(r):
     return dict(sana=r["sana"], faktura=r["faktura"], filial=r["filial"], kod=r["kod"], nomi=r["nomi"],
                 kategoriya=r["kategoriya"], tur=r["tur"], gramm=r2(r["gramm"]), summa=r2(r["summa"]),
                 fakt_1gr=r2(r.get("fakt_1gr")), hisob_1gr=r2(r.get("hisob_1gr")), farq_gr=r2(r.get("farq_gr")),
-                farq=r2(r.get("farq")), holat=r.get("holat"), izoh=r.get("izoh"), transh=r.get("transh"))
+                farq=r2(r.get("farq")), holat=r.get("holat"), izoh=r.get("izoh"), transh=r.get("transh"),
+                vozvrat_qism=r.get("vozvrat_qism"), vozvrat_manba=r.get("vozvrat_manba"))
+
+
+def sana_transh(cfg, sana):
+    """Фактура тўлиқ возврат бўлса — шу санада амалда бўлган транш."""
+    trs = sorted(cfg.get("transhlar", []), key=lambda t: t["sana"])
+    if not trs:
+        return None
+    cand = [t for t in trs if t["sana"] <= (sana or "9999")] or trs[:1]
+    return cand[-1]["no"]
 
 
 def transh_no(r):
@@ -112,6 +122,9 @@ def transh_no(r):
 def invoices(rows, cfg):
     """Фактуралар (фактура № + филиал + сана) — транш бўйича гуруҳланган."""
     inv = {}
+    rows_by = {}
+    for r in rows:
+        rows_by.setdefault((r["faktura"], r["filial"], r["sana"]), []).append(r)
     for r in rows:
         k = (r["faktura"], r["filial"], r["sana"])
         a = inv.get(k)
@@ -124,6 +137,8 @@ def invoices(rows, cfg):
         a["n"] += 1
         if r.get("transh") == "возврат":
             a["vozvrat"] += 1
+            a.setdefault("vlist", []).append(dict(tur=r["tur"], gramm=r2(r["gramm"]), narx=r2(r.get("hisob_1gr")), summa=r2(r["summa"]),
+                                                  kod=r["kod"], qism=r.get("vozvrat_qism") or 1, manba=r.get("vozvrat_manba") or ""))
         a["gramm"] += r["gramm"] or 0
         a["fakt"] += r["summa"] or 0
         a["hisob"] += r.get("hisob") or 0
@@ -138,6 +153,9 @@ def invoices(rows, cfg):
     tinfo = {t["no"]: t for t in cfg.get("transhlar", [])}
     out = []
     for a in inv.values():
+        if a["transh"] is None:
+            a["transh"] = sana_transh(cfg, a["sana"])
+        a["xulosa"] = N.faktura_xulosa(rows_by[(a["faktura"], a["filial"], a["sana"])], tinfo)
         a["farq"] = a["fakt"] - a["hisob"]
         a["trs"] = [dict(no=n, sana=tinfo[n]["sana"], birja=tinfo[n].get("birja_999"))
                     for n in sorted(a.pop("trs", set())) if n in tinfo]
@@ -170,6 +188,10 @@ def apply_filter(rows, trs, tr, oy):
         k = (r["faktura"], r["filial"], r["sana"])
         if inv_tr.get(k) is None:
             inv_tr[k] = transh_no(r)
+    for k, v in inv_tr.items():
+        if v is None:  # фактура тўлиқ возврат — шу санадаги транш
+            c = [t for t in sorted(trs, key=lambda t: t["sana"]) if t["sana"] <= (k[2] or "9999")]
+            inv_tr[k] = c[-1]["no"] if c else None
 
     def keep(r):
         if oy and not (r["sana"] or "").startswith(oy):
@@ -356,6 +378,11 @@ async def api_transh_saqla(request):
         errs, _ = B.check_transh(p, cfg)
         if errs:
             return web.json_response({"errors": errs}, status=400)
+        dup = next((t for t in cfg["transhlar"] if t["sana"] == p["sana"] and abs(t["birja_999"] - p["birja"]) < 0.005), None)
+        if dup:  # шу сана ва нархдаги транш бор — суммани қўшамиз
+            dup["summa_usd"] += p["summa"]
+            B.save_cfg(cfg)
+            return web.json_response({"ok": True, "no": dup["no"], "qoshildi": True, "jami": dup["summa_usd"]})
         no = max((t["no"] for t in cfg["transhlar"]), default=0) + 1
         cfg["transhlar"].append({"no": no, "sana": p["sana"], "summa_usd": p["summa"], "birja_999": p["birja"],
                                  "narxlar": p["narxlar"], "manba": f"Mini app, {dt.date.today()}", "yopilgan_sana": None})
