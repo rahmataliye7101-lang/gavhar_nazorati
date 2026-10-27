@@ -245,7 +245,7 @@ def key(r):
 
 
 # ---------------- возврат ----------------
-RET_COLS = ["id", "sana", "filial", "kod", "model", "nomi", "gramm", "summa", "hujjat"]
+RET_COLS = ["id", "sana", "filial", "kod", "model", "nomi", "gramm", "summa", "hujjat", "chiqdi_sana", "chiqdi_qator"]
 MODEL_RE = re.compile(r"\b([A-Z]{2,4}\d{5,7})\b")
 
 
@@ -329,7 +329,54 @@ def load_returns(path):
     for r in rows:
         r["gramm"] = to_num(r["gramm"]) or 0.0
         r["summa"] = to_num(r["summa"]) or 0.0
+        cq = str(r.get("chiqdi_qator") or "").strip()
+        r["chiqdi_qator"] = int(float(cq)) if cq else None
+        r["chiqdi_sana"] = r.get("chiqdi_sana") or None
     return rows
+
+
+def ret_key(r):
+    return (str(r.get("kod") or ""), str(r.get("model") or ""), str(r.get("sana") or ""),
+            round(float(r["gramm"]), 2), round(float(r["summa"]), 2))
+
+
+def ret_faol(x, i=None, r=None):
+    """Возврат товар шу қатор учун рўйхатда борми (кейинги файлда чиқариб ташланмаганми)."""
+    cq, cs = x.get("chiqdi_qator"), x.get("chiqdi_sana")
+    if cq is not None:
+        return i is None or i < cq
+    if cs:
+        return not (r and r.get("sana") and r["sana"] >= cs)
+    return True
+
+
+def sync_returns(path, new_rows, ledger_len, faqat_qosh=False):
+    """Янги возврат файли = тўлиқ жорий рўйхат: янгилари қўшилади (+), файлда йўқлари чиқарилади (−).
+    Чиқарилганлар олдин юкланган фактуралар учун сақланади. faqat_qosh=True — фақат қўшиш."""
+    old = load_returns(path)
+    nk = {}
+    for r in new_rows:
+        nk.setdefault(ret_key(r), r)
+    ok_ = {ret_key(r): r for r in old}
+    today = dt.date.today().isoformat()
+    plus, minus, back = [], [], []
+    for k, r in nk.items():
+        if k not in ok_:
+            old.append(r)
+            plus.append(r)
+        elif ok_[k].get("chiqdi_qator") is not None or ok_[k].get("chiqdi_sana"):
+            ok_[k]["chiqdi_qator"], ok_[k]["chiqdi_sana"] = None, None
+            back.append(ok_[k])
+    if not faqat_qosh:
+        for k, r in ok_.items():
+            if k not in nk and r.get("chiqdi_qator") is None and not r.get("chiqdi_sana"):
+                r["chiqdi_qator"], r["chiqdi_sana"] = ledger_len, today
+                minus.append(r)
+    save_returns(path, old)
+    faol = [r for r in old if r.get("chiqdi_qator") is None and not r.get("chiqdi_sana")]
+    sm = lambda rs: sum(float(r["summa"]) for r in rs)
+    return dict(plus=len(plus), plus_s=sm(plus), minus=len(minus), minus_s=sm(minus), back=len(back),
+                n=len(faol), summa=sm(faol))
 
 
 def save_returns(path, rows):
@@ -355,10 +402,12 @@ def add_returns(path, new_rows):
     return added, len(new_rows) - added
 
 
-def find_return(r, g, returns, f1=None, tol=0.3):
+def find_return(r, g, returns, f1=None, tol=0.3, i=None):
     """Возврат рўйхатидан мос товар: (топилган, нархи мосми). Аввал артикул, кейин модель+грамм;
     бир нечта номзод бўлса — нархи фактурага мос келгани олинади."""
     kod, model = str(r.get("kod") or "").strip(), model_of(r.get("nomi"))
+    sana_r = r.get("sana") or ""
+    returns = [x for x in returns if ret_faol(x, i, r) and not (sana_r and x.get("sana") and str(x["sana"])[:10] > sana_r)]
     cands = [x for x in returns if not x.get("_used") and kod and x.get("kod") and str(x["kod"]).strip() == kod]
     if not cands and model:
         cands = [x for x in returns if not x.get("_used") and x.get("model") == model and abs(float(x["gramm"]) - g) <= 0.011]
@@ -372,13 +421,23 @@ def find_return(r, g, returns, f1=None, tol=0.3):
     return cands[0], False
 
 
+def q_yopiq(q, i, r):
+    """Возврат қисми якунланганми (шу қатор учун)."""
+    yq, ys = q.get("yopilgan_qator"), q.get("yopilgan_sana")
+    if yq is not None:
+        return i >= yq
+    return bool(ys and r.get("sana") and r["sana"] >= ys)
+
+
 def qism_stats(cfg):
     """Суммали возврат қисмлари: берилган / қолган."""
     return [dict(no=q["no"], sana=q.get("sana"), birja=q.get("birja"), summa=q["summa_usd"], berilgan=q.get("_used", 0.0),
-                 n=q.get("_n", 0), qolgan=q["summa_usd"] - q.get("_used", 0.0)) for q in cfg.get("vozvrat_qismlar") or []]
+                 n=q.get("_n", 0), qolgan=q["summa_usd"] - q.get("_used", 0.0),
+                 yopilgan=q.get("yopilgan_sana")) for q in cfg.get("vozvrat_qismlar") or []]
 
 
 def returns_stats(returns):
+    returns = [r for r in returns if r.get("_used") or (r.get("chiqdi_qator") is None and not r.get("chiqdi_sana"))]
     used = [r for r in returns if r.get("_used")]
     rest = [r for r in returns if not r.get("_used")]
     sm = lambda rs: sum(float(r["summa"]) for r in rs)
@@ -402,6 +461,8 @@ def tur(nomi, kat):
         return "Браслет"
     if ZANJIR_RE.search(k) or ZANJIR_RE.match(first):
         return "Дорика"
+    if "dorika" in n or "дорика" in n:  # Tosh turi - Dorika → Дорика нархи
+        return "Дорика"
     # 2) Ван Клиф
     if any(v in n for v in VANCLIF):
         return "Ван Клиф"
@@ -424,7 +485,7 @@ def compute(cfg, ledger, returns=None):
     for ret in returns:
         ret.pop("_used", None)
     chegara = cfg.get("chegara_usd_gr", 0.3)
-    tr = sorted(cfg["transhlar"], key=lambda t: t["sana"])
+    tr = sorted(cfg["transhlar"], key=lambda t: t["no"])  # навбат: биринчи киритилган (тепадаги) пул биринчи тугайди
     vq = cfg.get("vozvrat_qismlar") or []  # суммаси ва нарх жадвали билан берилган возврат (рўйхатсиз)
     for q in vq:
         q["_used"], q["_n"] = 0.0, 0
@@ -454,12 +515,14 @@ def compute(cfg, ledger, returns=None):
             continue
         if r["tur"].startswith("❓"):
             r["izoh"] = "Тур аниқланмади — Детский нормаси олинди"
-        def alloc(commit):
+        def alloc(commit, start=0):
             lf = left if commit else list(left)
             rem_g, cost, parts = g, 0.0, []
             for ti, t in enumerate(tr):
                 if rem_g <= 1e-9:
                     break
+                if ti < start:
+                    continue
                 if lf[ti] <= 1e-6:
                     continue
                 ys, yq = t.get("yopilgan_sana"), t.get("yopilgan_qator")
@@ -488,8 +551,10 @@ def compute(cfg, ledger, returns=None):
 
         cost, parts = alloc(False)
         # нарх транш бўйича тўғри келмаса — возврат рўйхатидан қидирамиз
-        if s is not None and returns and abs(s / g - cost / g) > chegara:
-            ret, price_ok = find_return(r, g, returns, s / g, chegara)
+        if s is not None and (returns or vq) and abs(s / g - cost / g) > chegara:
+            v1 = cfg.get("vozvrat_1") or {}
+            v1_yopiq = q_yopiq(v1, i, r) if v1 else False
+            ret, price_ok = (None, False) if v1_yopiq else find_return(r, g, returns, s / g, chegara, i)
             if ret is not None and price_ok:
                 ret["_used"] = True
                 ret["_faktura"] = r.get("faktura")
@@ -507,6 +572,8 @@ def compute(cfg, ledger, returns=None):
                 continue
             done = False
             for q in vq:
+                if q_yopiq(q, i, r):
+                    continue
                 pq = q["narxlar"].get(r["tur"]) or q["narxlar"].get("Дорика")
                 if pq and abs(s / g - pq) <= chegara and q["summa_usd"] - q["_used"] >= s - 1:
                     q["_used"] += s; q["_n"] += 1
@@ -522,6 +589,8 @@ def compute(cfg, ledger, returns=None):
             if done:
                 continue
             for q in vq:
+                if q_yopiq(q, i, r):
+                    continue
                 hit = next((tn for tn, pv in q["narxlar"].items() if abs(s / g - pv) <= chegara), None)
                 if hit and hit != r["tur"]:
                     pq = q["narxlar"].get(r["tur"]) or q["narxlar"].get("Дорика")
@@ -531,7 +600,24 @@ def compute(cfg, ledger, returns=None):
             if ret is not None:
                 r["_ret_hint"] = (f"Возвратда ўхшаш товар бор ({ret.get('filial')}, {_dmy(ret.get('sana'))}), лекин у "
                                   f"{float(ret['summa']) / float(ret['gramm']):.2f} $ дан қайтарилган — бу ҳам мос эмас.")
-        cost, parts = alloc(True)
+        # 1-пул ва возвратга мос келмади — кейинги очиқ пул(лар) нархини текширамиз
+        sakrash = 0
+        if s is not None and abs(s / g - cost / g) > chegara and parts and parts[0][0] != "пул етмади":
+            i0 = next((k for k, t in enumerate(tr) if t["no"] == parts[0][0]), 0)
+            for tj in range(i0 + 1, len(tr)):
+                c2, p2 = alloc(False, start=tj)
+                if p2 and p2[0][0] == tr[tj]["no"] and abs(s / g - c2 / g) <= chegara:
+                    sakrash = tj
+                    r["_sakrash_dan"] = parts[0][0]
+                    break
+        keyingi = []
+        if s is not None and parts and parts[0][0] != "пул етмади" and not sakrash:
+            i0 = next((k for k, t in enumerate(tr) if t["no"] == parts[0][0]), 0)
+            for tj in range(i0 + 1, len(tr)):
+                if left[tj] > 1 and not tr[tj].get("yopilgan_sana"):
+                    pj = tr[tj]["narxlar"].get(r["tur"]) or tr[tj]["narxlar"].get("Дорика")
+                    keyingi.append(f"{tr[tj]['no']}-пул нархига ({pj:.2f})")
+        cost, parts = alloc(True, start=sakrash)
         r["transh"] = " + ".join(f"№{n}: {gg:.2f} гр × {p:.2f}" for n, gg, p in parts) if len(parts) > 1 else f"№{parts[0][0]}"
         r["hisob"] = cost
         r["hisob_1gr"] = cost / g
@@ -544,9 +630,14 @@ def compute(cfg, ledger, returns=None):
             if abs(r["farq_gr"]) <= chegara:
                 r["holat"] = "✓ тўғри"
                 r["izoh"] = togri_izoh(parts, tr)
+                if r.get("_sakrash_dan") is not None:
+                    r["sakrash"] = True
+                    r["izoh"] = f"{r.pop('_sakrash_dan')}-пул нархига мос келмади, возвратда ҳам йўқ → " + r["izoh"]
             else:
                 r["holat"] = "⚠ ҚИММАТ" if r["farq_gr"] > 0 else "⚠ арзон"
                 r["izoh"] = sabab(r, tr, parts)
+                if keyingi and not r.get("_pool_hint"):
+                    r["izoh"] += " " + ", ".join(keyingi) + " ва возвратга ҳам мос эмас."
                 pp = [x for x in parts if x[0] != "пул етмади"]
                 if len(pp) > 1:
                     r["izoh"] = (f"{pp[0][0]}-пул шу товарда тугаб, {pp[-1][0]}-пулга ўтди — тўғри нарх аралаш: "
@@ -590,12 +681,12 @@ def faktura_xulosa(rs, tmap):
     """Фактура бўйича қисқа текширув: қайси пулда тўғри, пул алмашдими, возврат берилдими."""
     L = []
     rv = [r for r in rs if r.get("transh") == "возврат"]
-    by_tr = OrderedDict()
+    by_tr, sak = OrderedDict(), OrderedDict()
     for r in rs:
         if r.get("transh") == "возврат":
             continue
         ns = tuple(int(x) for x in re.findall(r"№(\d+)", str(r.get("transh") or "")))
-        by_tr.setdefault(ns, []).append(r)
+        (sak if r.get("sakrash") else by_tr).setdefault(ns, []).append(r)
     prev_n = None
     for ns, grp_ in sorted(by_tr.items(), key=lambda kv: kv[0]):
         if not ns:
@@ -613,6 +704,10 @@ def faktura_xulosa(rs, tmap):
         if badn:
             L.append(f"❌ {badn} та товар — {nom} нархига тўғри келмади")
         prev_n = ns[-1]
+    for ns, grp_ in sak.items():
+        t0 = tmap.get(ns[0], {})
+        L.append(f"➡️ {len(grp_)} та товар — олдинги пулга ва возвратга мос келмади, "
+                 f"{ns[0]}-пул ({_dmy(t0.get('sana'))}, биржа {t0.get('birja_999')}) нархида тўғри")
     if rv:
         r1n = sum(1 for r in rv if (r.get("vozvrat_qism") or 1) == 1)
         L.append(f"↩️ {len(rv)} та товар — возврат товар берилди, возврат нархида тўғри"
@@ -980,9 +1075,10 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
             new_rows.append(r)
             added += 1
     returns = load_returns(returns_path)
-    trs_old = None
+    trs_old, q_old = None, {}
     if added:
         _, trs_old = compute(cfg, ledger[:len(ledger) - added], returns)
+        q_old = {q["no"]: q["qolgan"] for q in qism_stats(cfg)}
         save_ledger(ledger_path, ledger)
     rows, trs = compute(cfg, ledger, returns)
     s = write_report(out_path, cfg, rows, trs, returns)
@@ -1085,20 +1181,30 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
             for t in trs:
                 ol = old_left.get(t["no"], t["summa"])
                 if ol > 1 and t["left"] <= 1:
-                    nxt = next((x for x in trs if x["sana"] > t["sana"] and x["left"] > 1), None)
+                    nxt = next((x for x in trs[trs.index(t) + 1:] if x["left"] > 1), None)
                     L.append(f"🔔 Транш №{t['no']} ({_dmy(t['sana'])}) пули шу фактурада тугади."
                              + (f" Қолган товарлар Транш №{nxt['no']} ({_dmy(nxt['sana'])}) нархида текширилди." if nxt else
                                 " Бошқа транш йўқ — янги пул киритинг!"))
                 elif t["summa"] and ol / t["summa"] > 0.1 >= t["left"] / t["summa"] and t["left"] > 1:
                     L.append(f"⚠ Транш №{t['no']} да фақат {t['left']:,.0f} $ қолди ({t['left'] / t['summa'] * 100:.0f}%).")
+        for q in qism_stats(cfg):
+            if q_old.get(q["no"], 0) > 100 and q["qolgan"] <= 100:
+                L.append(f"🔔 Возврат {q['no']}-қисм ({q['summa']:,.0f} $) тугади. Якунлаш: /vozvrat_yop {q['no']}")
         if act:
             L.append(f"💰 Жорий транш №{act['no']} ({_dmy(act['sana'])}): қолдиқ {act['left']:,.0f} $ (ишлатилди {act['used']:,.0f} $)")
         L.append(f"💰 Gavhar да жами қолдиқ: {s['left']:,.0f} $")
         for q in qism_stats(cfg):
-            L.append(f"↩️ Возврат {q['no']}-қисм: қолди {q['qolgan']:,.0f} $ ({q['summa']:,.0f} $ дан)")
+            if not q["yopilgan"]:
+                L.append(f"↩️ Возврат {q['no']}-қисм: қолди {q['qolgan']:,.0f} $ ({q['summa']:,.0f} $ дан)")
         L.append("Батафсил: Excel файл ёки «Назорат» mini app.")
         return "\n".join(L)
     s["qismlar"] = qism_stats(cfg)
+    if returns:
+        s["v1"] = dict(returns_stats(returns), yopilgan=(cfg.get("vozvrat_1") or {}).get("yopilgan_sana"))
+    import os
+    if (os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID")) and not os.environ.get("RAILWAY_VOLUME_MOUNT_PATH"):
+        s["volume_ogoh"] = ("⚠️ Railway да Volume уланмаган — янги файл юклаганда маълумотлар ўчиб кетади! "
+                            "Railway → сервис → Attach volume → /data.")
     L += holat_matn(rows, trs, s)
     return "\n".join(L)
 
@@ -1106,6 +1212,8 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
 def holat_matn(rows, trs, s):
     """Содда ҳолат матни (бот учун)."""
     L = [f"📊 ҲОЛАТ · {dt.date.today():%d.%m.%Y}", ""]
+    if s.get("volume_ogoh"):
+        L = [s["volume_ogoh"], ""] + L
     if not trs:
         return L + ["Ҳали транш (пул) киритилмаган.", "Gavhar нарх хабарини шу ерга forward қилинг — бот суммани сўрайди."]
     L.append(f"💰 Gavhar да пулингиз: {s['left']:,.0f} $")
@@ -1139,11 +1247,103 @@ def holat_matn(rows, trs, s):
     rv = sum(1 for r in rows if r.get("transh") == "возврат")
     if rv:
         L.append(f"↩️ Возвратдан берилган: {rv} та товар (возврат нархида)")
+    v1 = s.get("v1")
+    if v1:
+        L.append(f"↩️ Возврат 1-қисм (рўйхат): {v1['n']} та · {v1['summa']:,.0f} $ → берилди {v1['berilgan_summa']:,.0f} $"
+                 + (f" — якунланган ({_dmy(v1['yopilgan'])})" if v1["yopilgan"] else f", қолди {v1['qolgan_summa']:,.0f} $"))
     for q in s.get("qismlar", []):
-        L.append(f"↩️ Возврат {q['no']}-қисм: {q['summa']:,.0f} $ → берилди {q['berilgan']:,.0f} $, қолди {q['qolgan']:,.0f} $")
+        L.append(f"↩️ Возврат {q['no']}-қисм: {q['summa']:,.0f} $ → берилди {q['berilgan']:,.0f} $"
+                 + (f" — якунланган ({_dmy(q['yopilgan'])})" if q["yopilgan"] else f", қолди {q['qolgan']:,.0f} $"))
     if s.get("tugash"):
         L.append(f"⏳ Пул тахминан {s['tugash']:%d.%m.%Y} гача етади")
     return L
+
+
+OYLAR = ["", "Январ", "Феврал", "Март", "Апрел", "Май", "Июн", "Июл", "Август", "Сентябр", "Октябр", "Ноябр", "Декабр"]
+
+
+def oylik_tekshir(cfg, ledger, returns, files, out_path):
+    """Ойлик приход файли бўйича тўлиқ текширув. Реестр ўзгармайди.
+    Ой бошигача юкланган фактуралар + шу ойнинг приходи (файлдан) → 1, 2-пул ва возвратлар бўйича қайта ҳисоб."""
+    import copy
+    warns, frows = [], []
+    for f in files:
+        frows += read_invoice(f, warns)
+    seen, uniq = set(), []
+    for r in frows:
+        k = key(r)
+        if k not in seen:
+            seen.add(k)
+            uniq.append(r)
+    frows = uniq
+    if not frows:
+        return None, "❌ Файлда приход қаторлари топилмади."
+    months = sorted({(r["sana"] or "")[:7] for r in frows if r.get("sana")})
+    m0 = min((r["sana"] for r in frows if r.get("sana")), default="0000")  # 15 кунлик ёки ойлик — файлдаги биринчи сана
+    cfg = copy.deepcopy(cfg)
+    for t in cfg["transhlar"]:  # қатор рақами бўйича ёпиш бу ерда маъносиз — санаси қолади
+        t.pop("yopilgan_qator", None)
+    for q in cfg.get("vozvrat_qismlar") or []:
+        q.pop("yopilgan_qator", None)
+    (cfg.get("vozvrat_1") or {}).pop("yopilgan_qator", None)
+    returns = [dict(x, chiqdi_qator=None) for x in returns]
+    base = [r for r in ledger if (r.get("sana") or "") < m0]
+    rows, trs = compute(cfg, base + frows, returns)
+    mk = {key(r) for r in frows}
+    mr = [r for r in rows if key(r) in mk]
+    s = write_report(out_path, cfg, mr, trs, returns)
+    oy = ", ".join(f"{OYLAR[int(m[5:7])]} {m[:4]}" for m in months) or "—"
+    fakt = sum(r["summa"] or 0 for r in mr)
+    inv = {(r["faktura"], r["filial"]) for r in mr}
+    t0 = min((t["sana"] for t in cfg["transhlar"]), default=None)
+    oldin = [r for r in mr if t0 and (r.get("sana") or "") < t0]
+    L0 = []
+    if not cfg["transhlar"]:
+        L0 = ["⚠️ Ботда пул (транш) киритилмаган — нархлар текширилмади. Аввал шу давр пулларини киритинг.", ""]
+    elif oldin:
+        L0 = [f"⚠️ {len(oldin)} та товар ({sum(r['summa'] or 0 for r in oldin):,.0f} $) биринчи пулдан ({_dmy(t0)}) олдинги санада.",
+              "   Бу давр пуллари ботда йўқ — уларни киритмагунча бу товарлар нотўғри пулга ёзилади.", ""]
+    L = L0 + [f"📅 ТЕКШИРУВ · {oy} ({_dmy(min(r['sana'] for r in mr))} – {_dmy(max(r['sana'] for r in mr))})", "",
+         f"📦 Приход: {len(mr)} та товар · {sum(r['gramm'] for r in mr):,.2f} гр · {fakt:,.2f} $",
+         f"   {len(inv)} та фактура · {len({r['filial'] for r in mr})} та дўкон", "", "💳 Пуллар (ой охирида):"]
+    for t in trs:
+        L.append(f"   {t['no']}-пул ({_dmy(t['sana'])}, биржа {t['birja']}): {t['summa']:,.0f} $ → ишлатилди {t['used']:,.0f} $, "
+                 f"қолди {t['left']:,.0f} $ — {t['holat'].lower()}")
+    rv = [r for r in mr if r.get("transh") == "возврат"]
+    ok = [r for r in mr if r["holat"].startswith("✓") and r.get("transh") != "возврат"]
+    bad = [r for r in mr if r["holat"].startswith("⚠")]
+    L += ["", "Текширув:"]
+    by = OrderedDict()
+    for r in ok:
+        ns = re.findall(r"№(\d+)", str(r.get("transh") or ""))
+        by.setdefault("+".join(dict.fromkeys(ns)) or "?", []).append(r)
+    for k, rs_ in sorted(by.items()):
+        L.append(f"✅ {k}-пул нархида тўғри: {len(rs_)} та · {sum(r['summa'] or 0 for r in rs_):,.2f} $")
+    for qn in sorted({r.get("vozvrat_qism") or 1 for r in rv}):
+        qr = [r for r in rv if (r.get("vozvrat_qism") or 1) == qn]
+        L.append(f"↩️ Возврат {qn}-қисм{' (рўйхат)' if qn == 1 else ''}: {len(qr)} та · {sum(r['summa'] or 0 for r in qr):,.2f} $")
+    qim = sum(r["farq"] or 0 for r in bad if (r["farq"] or 0) > 0)
+    arz = sum(r["farq"] or 0 for r in bad if (r["farq"] or 0) < 0)
+    if bad:
+        L.append(f"❌ Хато: {len(bad)} та товар · {len({(r['faktura'], r['filial']) for r in bad})} та фактурада")
+        if qim:
+            L.append(f"   👉 ОРТИҚЧА ёзилган: {qim:,.2f} $")
+        if arz:
+            L.append(f"   👉 КАМ ёзилган: {abs(arz):,.2f} $")
+        byf = defaultdict(float)
+        for r in bad:
+            byf[r["filial"]] += r["farq"] or 0
+        L.append("   Энг кўп фарқ:")
+        for f_, v in sorted(byf.items(), key=lambda kv: -abs(kv[1]))[:5]:
+            L.append(f"   • {f_}: {v:+,.2f} $")
+    else:
+        L.append("✅ Хато йўқ — ҳамма нархлар тўғри")
+    for q in qism_stats(cfg):
+        L.append(f"↩️ Возврат {q['no']}-қисм: берилди {q['berilgan']:,.0f} $, қолди {q['qolgan']:,.0f} $")
+    if warns:
+        L.append(f"🧮 Файлда арифметика хатоси: {len(warns)} та")
+    L += ["", "ℹ️ Бу текширув реестрни ўзгартирмайди. Батафсил — Excel файлда (Хатоликлар варағи)."]
+    return mr, "\n".join(L)
 
 
 def main():

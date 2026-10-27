@@ -63,7 +63,7 @@ def verify_init_data(init_data: str):
 PERM_MAP = {("GET", "/api/holat"): "holat", ("GET", "/api/fakturalar"): "faktura", ("GET", "/api/xatolar"): "xatolar",
             ("GET", "/api/transhlar"): "transhlar", ("POST", "/api/transh/tekshir"): "transh_qoshish",
             ("POST", "/api/transh"): "transh_qoshish", ("POST", "/api/transh/yop"): "transh_qoshish",
-            ("POST", "/api/chegara"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
+            ("POST", "/api/chegara"): "transh_qoshish", ("POST", "/api/vozvrat/yop"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
             ("POST", "/api/xatolar/excel"): "hisobot"}
 
 
@@ -90,6 +90,7 @@ def state():
     st = N.stats(rows, trs)
     st["vozvrat"] = N.returns_stats(rets)
     st["qismlar"] = N.qism_stats(cfg)
+    st["vozvrat"]["yopilgan"] = (cfg.get("vozvrat_1") or {}).get("yopilgan_sana")
     return cfg, rows, trs, st
 
 
@@ -208,7 +209,7 @@ async def api_filtr(request):
     cfg, rows, trs, s = await asyncio.to_thread(state)
     months = sorted({(r["sana"] or "")[:7] for r in rows if r["sana"]}, reverse=True)
     return web.json_response(dict(
-        transhlar=[dict(no=t["no"], sana=t["sana"], summa=t["summa"], birja=t["birja"]) for t in sorted(trs, key=lambda t: t["sana"])],
+        transhlar=[dict(no=t["no"], sana=t["sana"], summa=t["summa"], birja=t["birja"]) for t in sorted(trs, key=lambda t: t["no"])],
         oylar=[dict(oy=m, nomi=f"{OY_NOMI[int(m[5:7])]} {m[:4]}") for m in months]))
 
 
@@ -217,7 +218,7 @@ async def api_fakturalar(request):
     _, oy = parse_filter(request)
     inv = [a for a in invoices(rows, cfg) if not oy or (a["sana"] or "").startswith(oy)]
     groups = []
-    for t in sorted(trs, key=lambda t: t["sana"], reverse=True):
+    for t in sorted(trs, key=lambda t: t["no"], reverse=True):
         items = [a for a in inv if a["transh"] == t["no"]]
         groups.append(dict(no=t["no"], sana=t["sana"], summa=t["summa"], birja=t["birja"], holat=t["holat"],
                            used=r2(t["used"]), left=r2(t["left"]), pct=r2(t["used"] / t["summa"] * 100, 1) if t["summa"] else 0,
@@ -291,6 +292,112 @@ async def api_xatolar(request):
     return web.json_response({"chegara": cfg.get("chegara_usd_gr", 0.3), "rows": [row_json(r) for r in bad]})
 
 
+async def _send_doc(uid, path, caption):
+    if TG_APP is None:
+        return
+    try:
+        with open(path, "rb") as f:
+            await TG_APP.bot.send_document(uid, f, filename=Path(path).name, caption=caption)
+    except Exception:
+        log.exception("send_document")
+
+
+async def api_yuklash(request):
+    """Mini app орқали Excel юклаш (20 МБ дан катта файллар ҳам). tur: auto | faktura | oylik | vozvrat."""
+    import tempfile, shutil, filecmp
+    uid = request["uid"]
+    tur_, mode, fname, td = "auto", "", "fayl.xlsx", tempfile.mkdtemp()
+    path = None
+    try:
+        reader = await request.multipart()
+        async for part in reader:
+            if part.name == "tur":
+                tur_ = (await part.text()).strip() or "auto"
+            elif part.name == "mode":
+                mode = (await part.text()).strip()
+            elif part.name == "file":
+                fname = Path(part.filename or fname).name
+                path = Path(td) / fname
+                with open(path, "wb") as f:
+                    while True:
+                        ch = await part.read_chunk(1 << 20)
+                        if not ch:
+                            break
+                        f.write(ch)
+        if not path or not fname.lower().endswith((".xlsx", ".xlsm")):
+            return web.json_response({"errors": ["Фақат Excel (.xlsx) файл"]}, status=400)
+        has = lambda p: DEV or B.has_perm(uid, p)
+        if tur_ == "auto":
+            if await asyncio.to_thread(B.looks_like_returns, str(path), fname):
+                tur_ = "vozvrat"
+            else:
+                rows = await asyncio.to_thread(N.read_invoice, str(path), [])
+                if not rows:
+                    return web.json_response({"errors": ["Файлда фактура ёки приход қаторлари топилмади"]}, status=400)
+                invs = {(r.get("faktura"), r.get("filial")) for r in rows}
+                ds = sorted({r.get("sana") for r in rows if r.get("sana")})
+                span = (dt.date.fromisoformat(ds[-1]) - dt.date.fromisoformat(ds[0])).days if ds else 0
+                tur_ = "oylik" if (len(invs) > 5 or span > 3) else "faktura"
+        if tur_ == "vozvrat":
+            if not has("vozvrat_yuklash"):
+                return web.json_response({"errors": ["Рухсат йўқ: возврат юклаш"]}, status=403)
+            rows = await asyncio.to_thread(N.read_returns, str(path))
+            if not rows:
+                return web.json_response({"errors": ["Возврат рўйхати ўқилмади"]}, status=400)
+            old = [r for r in N.load_returns(str(B.VOZVRAT)) if r.get("chiqdi_qator") is None and not r.get("chiqdi_sana")]
+            nk = {N.ret_key(r) for r in rows}
+            gone = sum(1 for r in old if N.ret_key(r) not in nk)
+            if not mode and old and gone > 0.3 * len(old):
+                return web.json_response({"ok": True, "sorov": True, "tur": "vozvrat",
+                                          "text": f"Файлда {len(rows)} та товар. Ҳозирги рўйхатдаги {len(old)} тадан {gone} таси бу файлда йўқ.\n"
+                                                  "Бу тўлиқ жорий рўйхатми ёки фақат қўшимчами?"})
+            async with B.LOCK:
+                B.backup(B.VOZVRAT)
+                st = N.sync_returns(str(B.VOZVRAT), rows, len(N.load_ledger(str(B.LEDGER))), mode == "add")
+            text = (f"✅ Возврат рўйхати янгиланди: ➕ {st['plus']} та ({st['plus_s']:,.0f} $), ➖ {st['minus']} та ({st['minus_s']:,.0f} $)"
+                    f"\n📦 Ҳозир рўйхатда: {st['n']} та · {st['summa']:,.0f} $")
+            return web.json_response({"ok": True, "tur": "vozvrat", "text": text})
+        if not has("faktura_yuklash"):
+            return web.json_response({"errors": ["Рухсат йўқ: фактура юклаш"]}, status=403)
+        if tur_ == "oylik":
+            cfg = B.load_cfg()
+            out = Path(td) / f"Oylik_tekshiruv_{dt.date.today():%Y-%m-%d}.xlsx"
+            mr, text = await asyncio.to_thread(N.oylik_tekshir, cfg, N.load_ledger(str(B.LEDGER)),
+                                               N.load_returns(str(B.VOZVRAT)), [str(path)], str(out))
+            sent = False
+            if mr and has("hisobot"):
+                await _send_doc(uid, out, "📑 Давр текшируви (mini app орқали юкланган)")
+                bad = [r for r in mr if str(r.get("holat", "")).startswith("⚠")]
+                if bad:
+                    ep = Path(td) / f"Xatoliklar_{dt.date.today():%Y-%m-%d}.xlsx"
+                    await asyncio.to_thread(N.write_errors_report, str(ep), mr, "Давр приходи — хатоликлар",
+                                            N.load_returns(str(B.VOZVRAT)))
+                    await _send_doc(uid, ep, "❌ Хатоликлар (Gavhar га эътироз учун)")
+                sent = True
+            return web.json_response({"ok": True, "tur": "oylik", "text": text, "chatga": sent})
+        # битта фактура — реестрга қўшилади
+        async with B.LOCK:
+            stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            B.BACKUP.mkdir(parents=True, exist_ok=True)
+            bk = B.BACKUP / f"ledger_{stamp}.csv"
+            shutil.copy(B.LEDGER, bk)
+            out = Path(td) / f"Gavhar_nazorat_{dt.date.today():%Y-%m-%d}.xlsx"
+            text = await asyncio.to_thread(N.run, str(B.TRANSH), str(B.LEDGER), str(out), [str(path)], str(B.VOZVRAT))
+            if filecmp.cmp(bk, B.LEDGER, shallow=False):
+                bk.unlink()
+            else:
+                (B.DATA / "last_backup.txt").write_text(str(bk))
+        if has("hisobot"):
+            for fp in sorted(Path(td).glob("Faktura_*.xlsx")):
+                await _send_doc(uid, fp, "📑 Батафсил — " + fp.stem[8:].replace("_", " "))
+        return web.json_response({"ok": True, "tur": "faktura", "text": text})
+    except Exception as e:
+        log.exception("yuklash")
+        return web.json_response({"errors": [f"Файлни ўқиб бўлмади: {e}"]}, status=400)
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
 async def api_xatolar_excel(request):
     """Танланган хатоликларни Excel қилиб чатга юбориш (фильтрлар билан)."""
     if TG_APP is None:
@@ -302,6 +409,7 @@ async def api_xatolar_excel(request):
     rows, _ = apply_filter(rows, trs, tr, oy)
     k, fil, tur_, q = b.get("k", "all"), b.get("filial", ""), b.get("tur", ""), (b.get("q") or "").strip().lower()
     faktura = b.get("faktura", "")
+    fset = set(b.get("filiallar") or [])
 
     def keep(r):
         h = str(r.get("holat", ""))
@@ -311,9 +419,10 @@ async def api_xatolar_excel(request):
         if k == "a" and "арзон" not in h: return False
         if k == "o" and ("ҚИММАТ" in h or "арзон" in h): return False
         if fil and r["filial"] != fil: return False
+        if fset and r["filial"] not in fset: return False
         if tur_ and r["tur"] != tur_: return False
         if faktura and r["faktura"] != faktura: return False
-        if q and q not in f"{r['kod']} {r['faktura']} {r['nomi']}".lower(): return False
+        if q and q not in f"{r['kod']} {r['faktura']} {r['nomi']} {r['filial']}".lower(): return False
         return True
     sel = [r for r in rows if keep(r)]
     if not sel:
@@ -386,7 +495,7 @@ async def api_transh_saqla(request):
         no = max((t["no"] for t in cfg["transhlar"]), default=0) + 1
         cfg["transhlar"].append({"no": no, "sana": p["sana"], "summa_usd": p["summa"], "birja_999": p["birja"],
                                  "narxlar": p["narxlar"], "manba": f"Mini app, {dt.date.today()}", "yopilgan_sana": None})
-        cfg["transhlar"].sort(key=lambda t: t["sana"])
+        cfg["transhlar"].sort(key=lambda t: t["no"])
         B.save_cfg(cfg)
     return web.json_response({"ok": True, "no": no})
 
@@ -402,6 +511,15 @@ async def api_transh_yop(request):
         t["yopilgan_sana"] = d.isoformat() if d else None
         t["yopilgan_qator"] = len(N.load_ledger(str(B.LEDGER))) if d else None
         B.save_cfg(cfg)
+    return web.json_response({"ok": True})
+
+
+async def api_vozvrat_yop(request):
+    b = await request.json()
+    async with B.LOCK:
+        err = B.vozvrat_qism_yop(int(b.get("no", 0)), bool(b.get("yop", True)))
+    if err:
+        return web.json_response({"errors": [err]}, status=404)
     return web.json_response({"ok": True})
 
 
@@ -450,12 +568,12 @@ def admin_state():
     names = u.get("names", {})
     users = [dict(id=aid, name="Asosiy admin (Railway)", role="admin", asosiy=True) for aid in sorted(B.ALLOWED)]
     users += [dict(id=int(x["id"]), name=x.get("name") or "", role=x.get("role", "user"), asosiy=False, sana=x.get("sana"),
-                   perms=x.get("perms", B.DEFAULT_PERMS))
+                   perms=x.get("perms", B.DEFAULT_PERMS), preset=B.preset_of(x.get("perms", B.DEFAULT_PERMS)))
               for x in u["users"] if int(x["id"]) not in B.ALLOWED]
     pending = [dict(id=int(p), name=names.get(str(p), "")) for p in u["pending"]]
-    now = dt.datetime.now().isoformat()
-    inv = sum(1 for v in u["invites"].values() if v["exp"] > now)
-    return dict(users=users, pending=pending, invites=inv, perm_names=B.PERMS)
+    inv = sum(1 for v in u["invites"].values() if B.inv_ok(v))
+    return dict(users=users, pending=pending, invites=inv, perm_names=B.PERMS,
+                presets={k: dict(nomi=t, perms=v) for k, (t, v) in B.PRESETS.items()})
 
 
 async def notify(uid, text):
@@ -469,7 +587,19 @@ async def notify(uid, text):
 async def api_admin(request):
     if not is_admin_req(request):
         return web.json_response({"errors": ["Фақат админлар учун"]}, status=403)
-    return web.json_response(admin_state())
+    st = admin_state()
+    st["link"] = await bot_link()
+    return web.json_response(st)
+
+
+async def bot_link():
+    """Ботга кириш ҳаволаси — ким босса, админга рухсат сўрови келади."""
+    if TG_APP is None:
+        return "https://t.me/BOT_USERNAME?start=sorov"
+    try:
+        return f"https://t.me/{(await TG_APP.bot.get_me()).username}?start=sorov"
+    except Exception:
+        return ""
 
 
 async def api_admin_act(request):
@@ -477,6 +607,9 @@ async def api_admin_act(request):
         return web.json_response({"errors": ["Фақат админлар учун"]}, status=403)
     b = await request.json()
     act, uid, role = b.get("act"), b.get("id"), b.get("role", "user")
+    preset = b.get("preset") if b.get("preset") in B.PRESETS else ""
+    if role in B.PRESETS:  # role сифатида тўплам номи келса
+        preset, role = role, "user"
     role = role if role in ("user", "admin") else "user"
     async with B.LOCK:
         if act in ("approve", "add"):
@@ -484,8 +617,9 @@ async def api_admin_act(request):
                 uid = int(str(uid).strip())
             except ValueError:
                 return web.json_response({"errors": ["ID нотўғри"]}, status=400)
-            B.add_user(uid, role, by=request["uid"])
-            await notify(uid, f"✅ Сизга Gavhar назорат ботидан фойдаланишга рухсат берилди ({B.ROLE_L[role]}). /start ни босинг.")
+            B.add_user(uid, role, by=request["uid"], perms=B.PRESETS[preset][1] if preset and role == "user" else None)
+            nom = B.PRESETS[preset][0] if preset and role == "user" else B.ROLE_L[role]
+            await notify(uid, f"✅ Сизга Gavhar назорат ботидан фойдаланишга рухсат берилди ({nom}). /start ни босинг.")
         elif act == "reject":
             u = B.load_users()
             u["pending"] = [p for p in u["pending"] if int(p) != int(uid)]
@@ -496,6 +630,9 @@ async def api_admin_act(request):
             rec = B.user_rec(int(uid))
             if rec:
                 B.add_user(int(uid), role, rec.get("name", ""))
+        elif act == "preset":
+            if preset:
+                B.set_perms(int(uid), B.PRESETS[preset][1])
         elif act == "perms":
             B.set_perms(int(uid), b.get("perms") or [])
         elif act == "delete":
@@ -508,9 +645,10 @@ async def api_admin_act(request):
             import secrets
             code = secrets.token_urlsafe(8)
             u = B.load_users()
-            now = dt.datetime.now()
-            u["invites"] = {k: v for k, v in u["invites"].items() if v["exp"] > now.isoformat()}
-            u["invites"][code] = {"role": role, "exp": (now + dt.timedelta(hours=24)).isoformat(), "by": request["uid"]}
+            u["invites"] = {k: v for k, v in u["invites"].items() if B.inv_ok(v)}
+            if role == "user" and not preset:
+                preset = "tekshiruvchi"
+            u["invites"][code] = {"role": role, "preset": preset if role == "user" else "", "exp": None, "by": request["uid"]}
             B.save_users(u)
             uname = None
             if TG_APP is not None:
@@ -518,10 +656,13 @@ async def api_admin_act(request):
             st = admin_state()
             st["link"] = f"https://t.me/{uname or 'BOT_USERNAME'}?start=inv_{code}"
             st["link_role"] = role
+            st["link_nomi"] = B.PRESETS[preset][0] if role == "user" else "Admin"
             return web.json_response(st)
         else:
             return web.json_response({"errors": ["Номаълум амал"]}, status=400)
-    return web.json_response(admin_state())
+    st = admin_state()
+    st["link"] = await bot_link()
+    return web.json_response(st)
 
 
 async def index(request):
@@ -529,7 +670,7 @@ async def index(request):
 
 
 def make_web():
-    app = web.Application(middlewares=[auth_mw])
+    app = web.Application(middlewares=[auth_mw], client_max_size=300 * 1024 * 1024)  # Excel 300 МБ гача
     app.router.add_get("/", index)
     app.router.add_get("/api/holat", api_holat)
     app.router.add_get("/api/xatolar", api_xatolar)
@@ -544,6 +685,8 @@ def make_web():
     app.router.add_post("/api/transh", api_transh_saqla)
     app.router.add_post("/api/transh/yop", api_transh_yop)
     app.router.add_post("/api/chegara", api_chegara)
+    app.router.add_post("/api/vozvrat/yop", api_vozvrat_yop)
+    app.router.add_post("/api/yuklash", api_yuklash)
     app.router.add_post("/api/hisobot", api_hisobot)
     app.router.add_get("/static/chart.umd.min.js", lambda r: web.FileResponse(BASE / "chart.umd.min.js"))
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
@@ -569,6 +712,8 @@ async def start_cmd(update, ctx):
         "↩️ Возврат рўйхати — /vozvrat\n"
         "📊 Ҳолат — /holat\n"
         "❌ Хатолар Excel да — /xatolar\n"
+        "📅 Ойлик приходни текшириш — /oylik\n"
+        "🔒 Возврат қисмини якунлаш — /vozvrat_yop 2\n"
         "↩️ Охирги фактурани бекор қилиш — /bekor\n\n"
         "Батафсил — «Назоратни очиш» тугмаси.", reply_markup=kb)
 
@@ -588,8 +733,16 @@ def make_bot():
     app.add_handler(CallbackQueryHandler(B.admin_cb, pattern="^ad_"))
     app.add_handler(CommandHandler("vozvrat", B.vozvrat))
     app.add_handler(CommandHandler("xatolar", B.xatolar_cmd))
+    app.add_handler(CommandHandler("vozvrat_yop", B.vozvrat_yop))
+    app.add_handler(CommandHandler("vozvrat_och", B.vozvrat_och))
+    app.add_handler(CommandHandler("oylik", B.oylik))
+    app.add_handler(CommandHandler("och", B.och))
+    app.add_handler(CommandHandler("yop", B.yop))
+    app.add_handler(CommandHandler("chegara", B.chegara))
+    app.add_handler(CommandHandler("narxlar", B.narxlar))
     app.add_handler(CallbackQueryHandler(B.tozalash_cb, pattern="^rs_"))
     app.add_handler(CallbackQueryHandler(B.transh_cb, pattern="^tr_"))
+    app.add_handler(CallbackQueryHandler(B.returns_cb, pattern="^rv_"))
     app.add_handler(MessageHandler(filters.Document.ALL, B.document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, B.on_text))
     app.add_error_handler(B.on_error)
@@ -612,6 +765,13 @@ async def main():
         if WEBAPP_URL:
             await TG_APP.bot.set_chat_menu_button(menu_button=MenuButtonWebApp("Назорат", WebAppInfo(url=WEBAPP_URL)))
         log.info("Бот ишга тушди")
+        if B.volume_yoq():
+            log.warning("Volume уланмаган — маълумот деплойда ўчади")
+            for aid in B.admin_ids():
+                try:
+                    await TG_APP.bot.send_message(aid, B.VOLUME_OGOH)
+                except Exception:
+                    pass
     else:
         log.warning("BOT_TOKEN йўқ — фақат веб сервер")
     await asyncio.Event().wait()

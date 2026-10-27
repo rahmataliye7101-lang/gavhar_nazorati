@@ -60,6 +60,7 @@ tr:last-child td{border-bottom:0}
 .filt{display:flex;align-items:center;justify-content:space-between;background:var(--card);border-radius:12px;padding:8px 12px;margin-bottom:10px;font-size:13px}
   .trl{margin-top:6px;font-size:12px;color:var(--mut)}
   .vq{margin-top:8px;padding:8px 10px;border-radius:10px;background:var(--bg2,rgba(52,199,89,.08))}
+  .upres{white-space:pre-wrap;font-size:12.5px;margin-top:10px;padding:10px;border-radius:10px;background:var(--bg2,rgba(0,0,0,.04));max-height:420px;overflow:auto}
 </style>
 </head>
 <body>
@@ -228,7 +229,11 @@ async function loadHolat() {
         <div><div class="lb">Do'konlar qaytargan</div><div class="v">${fmt(d.vozvrat.n)} ta</div><div class="mut">${usd(d.vozvrat.summa)}</div></div>
         <div><div class="lb">Boshqa do'konga berilgan</div><div class="v grn">${fmt(d.vozvrat.berilgan_n)} ta</div><div class="mut">${usd(d.vozvrat.berilgan_summa)}</div></div>
       </div>
-      <div class="rw" style="margin-top:10px"><span class="mut">Gavhar'da qolgan (hali berilmagan)</span><b>${fmt(d.vozvrat.qolgan_n)} ta · ${usd(d.vozvrat.qolgan_summa)}</b></div>
+      <div class="rw" style="margin-top:10px"><span class="mut">Gavhar'da qolgan (hali berilmagan)</span><b>${d.vozvrat.yopilgan ? 'Yakunlangan ' + dm(d.vozvrat.yopilgan) : fmt(d.vozvrat.qolgan_n) + ' ta · ' + usd(d.vozvrat.qolgan_summa)}</b></div>
+      <div class="mut" style="font-size:12px;margin-top:6px">Yangi ro'yxat faylini botga tashlang — qo'shilgan (+) va chiqqan (−) tovarlarni o'zi topadi.</div>
+      ${can('transh_qoshish') ? `<div style="margin-top:10px">${d.vozvrat.yopilgan
+        ? `<button class="btn2" onclick="vqYop(1, false)">Qayta ochish</button>`
+        : `<button class="btn2" onclick="vqYop(1, true)">Vozvratni yakunlash</button> <span class="mut" style="font-size:12px">tugasa bosing</span>`}</div>` : ''}
     </div>
     ${(d.qismlar || []).map(q => `<div class="card">
       <div class="mut" style="margin-bottom:8px">${q.no}-qism · summa bo'yicha (birja ${q.birja} narxida)</div>
@@ -237,7 +242,10 @@ async function loadHolat() {
         <div><div class="lb">Do'konlarga berilgan</div><div class="v grn">${usd(q.berilgan)}</div><div class="mut">${fmt(q.n)} ta tovar</div></div>
       </div>
       <div class="bar"><i style="width:${Math.max(1, Math.min(100, q.summa ? q.berilgan / q.summa * 100 : 0))}%"></i></div>
-      <div class="rw" style="margin-top:6px"><span class="mut">Gavhar'da qolgan</span><b>${usd(q.qolgan)}</b></div>
+      <div class="rw" style="margin-top:6px"><span class="mut">Gavhar'da qolgan</span><b>${q.yopilgan ? 'Yakunlangan ' + dm(q.yopilgan) : usd(q.qolgan)}</b></div>
+      ${can('transh_qoshish') ? `<div style="margin-top:10px">${q.yopilgan
+        ? `<button class="btn2" onclick="vqYop(${q.no}, false)">Qayta ochish</button>`
+        : `<button class="btn2" onclick="vqYop(${q.no}, true)">Vozvratni yakunlash</button> <span class="mut" style="font-size:12px">tugasa bosing</span>`}</div>` : ''}
     </div>`).join('')}` : ''}
     <div class="sec">Narx nazorati</div>
     <div class="card">
@@ -277,6 +285,52 @@ function drawChart(k) {
 
 /* ---------- FAKTURA ---------- */
 let FD = null, FSel = null, FOpen = null;
+/* ---------- EXCEL YUKLASH (20 MB dan katta ham) ---------- */
+let UPRES = null, UPFILE = null;
+function upCard() {
+  if (!can('faktura_yuklash') && !can('vozvrat_yuklash')) return '';
+  return `<div class="card" id="upcard">
+    <div class="rw"><b>📤 Excel yuklash</b><span class="mut" style="font-size:12px">katta fayllar ham</span></div>
+    <div class="mut" style="font-size:12px;margin-top:4px">Faktura, oylik / 15 kunlik prixod yoki vozvrat ro'yxati. Turini o'zi aniqlaydi.</div>
+    <select id="uptur" style="width:100%;margin-top:8px;padding:8px">
+      <option value="auto">Avto aniqlash</option>
+      <option value="faktura">Faktura (reyestrga qo'shiladi)</option>
+      <option value="oylik">Oylik / 15 kunlik prixod (faqat tekshiruv)</option>
+      <option value="vozvrat">Vozvrat ro'yxati (+/−)</option>
+    </select>
+    <input type="file" id="upf" accept=".xlsx,.xlsm" style="margin-top:8px;width:100%">
+    <button class="btn" id="upb" style="margin-top:8px">Yuklash</button>
+    <div id="upst" class="mut" style="margin-top:6px"></div>
+    ${UPRES ? `<div class="upres">${E(L(UPRES))}</div>` : ''}
+  </div>`;
+}
+function bindUp() { const b = $('#upb'); if (b) b.onclick = () => doUp(); }
+function doUp(mode) {
+  const inp = $('#upf'), f = (inp && inp.files[0]) || UPFILE;
+  if (!f) return toast('Fayl tanlang');
+  UPFILE = f;
+  const fd = new FormData();
+  fd.append('tur', $('#uptur').value); if (mode) fd.append('mode', mode); fd.append('file', f);
+  const x = new XMLHttpRequest();
+  x.open('POST', '/api/yuklash'); x.setRequestHeader('X-Init-Data', tg ? tg.initData : '');
+  const st = $('#upst');
+  x.upload.onprogress = e => { if (e.lengthComputable) st.textContent = `Yuklanmoqda… ${Math.round(e.loaded / e.total * 100)}%`; };
+  x.onload = () => {
+    let j = {}; try { j = JSON.parse(x.responseText); } catch (e) {}
+    if (x.status >= 300) { st.textContent = '⚠️ ' + L((j.errors || []).join('; ') || j.error || ('Xato ' + x.status)); return; }
+    if (j.sorov) {
+      st.innerHTML = `<div style="white-space:pre-wrap">${E(L(j.text))}</div><div style="margin-top:8px">
+        <button class="btn2" onclick="doUp('full')">🔄 To'liq ro'yxat (+/−)</button> <button class="btn2" onclick="doUp('add')">➕ Faqat qo'shish</button></div>`;
+      return;
+    }
+    UPRES = j.text; UPFILE = null; haptic('success');
+    toast(j.tur === 'faktura' ? 'Faktura tekshirildi' : j.tur === 'oylik' ? 'Tekshirildi — Excel chatga yuborildi' : 'Vozvrat yangilandi');
+    invalidate(); loadFaktura();
+  };
+  x.onerror = () => { st.textContent = '⚠️ Tarmoq xatosi'; };
+  st.textContent = 'Yuklanmoqda…'; x.send(fd);
+}
+
 async function loadFaktura() {
   const el = $('#p-faktura');
   try { await ensureFO(); FD = await api('/api/fakturalar' + qs()); if (FSel == null || (FSel !== 'all' && !FD.groups.some(g => g.no === FSel))) FSel = 'all'; renderFaktura(); }
@@ -289,14 +343,14 @@ function openFaktura(key, no) {
 }
 function renderFaktura() {
   const el = $('#p-faktura');
-  if (!FD.groups.length) { el.innerHTML = '<div class="card empty">Hali transh yo\'q</div>'; return; }
+  if (!FD.groups.length) { el.innerHTML = upCard() + '<div class="card empty">Hali transh yo\'q</div>'; bindUp(); return; }
   const sum = (k) => FD.groups.reduce((s, x) => s + (x[k] || 0), 0);
   const all = {no: 'all', sana: null, summa: sum('summa'), used: sum('used'), left: sum('left'), count: sum('count'), n: sum('n'),
     gramm: sum('gramm'), fakt: sum('fakt'), hisob: sum('hisob'), farq: sum('farq'), bad: sum('bad'), holat: '',
     items: FD.groups.flatMap(x => x.items).sort((a, b) => (b.sana || '').localeCompare(a.sana || ''))};
   all.pct = all.summa ? all.used / all.summa * 100 : 0;
   const g = FSel === 'all' ? all : (FD.groups.find(x => x.no === FSel) || FD.groups[0]);
-  el.innerHTML = filterBar(false) + `
+  el.innerHTML = upCard() + filterBar(false) + `
     <div class="seg"><button class="${g.no === 'all' ? 'on' : ''}" data-no="all">Hammasi</button>${FD.groups.map(x => `<button class="${x.no === g.no ? 'on' : ''}" data-no="${x.no}">Transh №${x.no} · ${dm(x.sana)}</button>`).join('')}</div>
     <div class="card">
       <div class="mut">${g.no === 'all' ? `Barcha transhlar (${FD.groups.length} ta · ${usd(g.summa)})` : `Pul berilgandan keyin (${dmy(g.sana)} · ${usd(g.summa)})`}${F.oy ? ' · ' + (FO.oylar.find(m => m.oy === F.oy) || {}).nomi : ''}</div>
@@ -312,17 +366,48 @@ function renderFaktura() {
       ${isClosed(g.holat) ? `<div class="mut" style="margin-top:6px">Transh yopilgan</div>` : ''}
     </div>
     <div class="sec">Fakturalar${g.bad ? ` · ${g.bad} tasida farq` : ''}</div>
-    ${g.items.length ? g.items.map(a => invCard(a)).join('') : '<div class="card empty">Bu transh bo\'yicha faktura yo\'q</div>'}
-    ${FD.other.length ? `<div class="sec">Transhga tushmagan</div>${FD.other.map(a => invCard(a)).join('')}` : ''}`;
-  el.querySelectorAll('.seg button').forEach(b => b.onclick = () => { FSel = b.dataset.no === 'all' ? 'all' : +b.dataset.no; FOpen = null; renderFaktura(); });
+    <input id="fq" placeholder="🔍 Do'kon nomi yoki faktura №" value="${esc(FQ)}" autocomplete="off" style="margin-bottom:8px">
+    <div class="seg" id="fv"><button data-v="inv" class="${FV === 'inv' ? 'on' : ''}">🧾 Fakturalar</button><button data-v="dok" class="${FV === 'dok' ? 'on' : ''}">🏪 Do'konlar bo'yicha</button></div>
+    <div id="flist"></div>`;
+  CURG = g;
+  bindUp();
+  $('#fq').oninput = e => { FQ = e.target.value; listFaktura(); };
+  el.querySelectorAll('#fv button').forEach(b => b.onclick = () => { FV = b.dataset.v; el.querySelectorAll('#fv button').forEach(x => x.classList.toggle('on', x === b)); listFaktura(); });
+  el.querySelectorAll('.seg button[data-no]').forEach(b => b.onclick = () => { FSel = b.dataset.no === 'all' ? 'all' : +b.dataset.no; FOpen = null; renderFaktura(); });
   bindFilter(el);
-  el.querySelectorAll('.inv').forEach(c => c.onclick = e => {
+  listFaktura();
+  const op = el.querySelector('.inv.open'); if (op) op.scrollIntoView({block: 'center'});
+}
+/* ---------- DO'KON QIDIRUV ---------- */
+let FQ = '', FV = 'inv', CURG = null;
+const nk = s => L(s || '').toLowerCase().replace(/[ʻʼ’'`‘]/g, '').replace(/filiali?/g, '').replace(/ye/g, 'e').replace(/[^a-z0-9]+/g, ' ').trim();
+function listFaktura() {
+  const box = $('#flist'); if (!box || !CURG) return;
+  const q = nk(FQ);
+  const all = CURG.items.concat(FD.other || []);
+  const items = all.filter(a => !q || nk(a.filial + ' ' + a.faktura).includes(q) || (a.faktura || '').toLowerCase().includes(FQ.trim().toLowerCase()));
+  if (FV === 'dok') {
+    const m = {};
+    items.forEach(a => { const k = a.filial || '—'; const x = m[k] = m[k] || {f: k, n: 0, fakt: 0, farq: 0, bad: 0, oxirgi: ''};
+      x.n++; x.fakt += a.fakt || 0; x.farq += a.farq || 0; x.bad += a.bad ? 1 : 0; if ((a.sana || '') > x.oxirgi) x.oxirgi = a.sana; });
+    const ds = Object.values(m).sort((a, b) => b.farq - a.farq);
+    box.innerHTML = `<div class="mut" style="margin:0 4px 8px">${ds.length} ta do'kon${q ? ' topildi' : ''} · farq bo'yicha saralangan</div>` +
+      (ds.length ? ds.map(x => `<div class="card dok" data-f="${esc(x.f)}" style="cursor:pointer">
+        <div class="rw"><b style="font-size:15px">${E(x.f)}</b>${farqBadge(x.farq, x.bad)}</div>
+        <div class="mut">${x.n} ta faktura · ${usd(x.fakt, 2)} · oxirgi ${dmy(x.oxirgi)}${x.bad ? ` · <span style="color:var(--red)">${x.bad} tasida xato</span>` : ''}</div>
+      </div>`).join('') : '<div class="card empty">Do\'kon topilmadi</div>');
+    box.querySelectorAll('.dok').forEach(c => c.onclick = () => { FQ = c.dataset.f; FV = 'inv'; renderFaktura(); window.scrollTo(0, $('#fq').getBoundingClientRect().top + scrollY - 80); });
+    return;
+  }
+  box.innerHTML = `${q ? `<div class="mut" style="margin:0 4px 8px">${items.length} ta faktura topildi</div>` : ''}` +
+    (items.length ? items.slice(0, 200).map(a => invCard(a)).join('') + (items.length > 200 ? `<div class="card empty">… yana ${items.length - 200} ta — qidiruvni aniqlashtiring</div>` : '')
+      : `<div class="card empty">${q ? 'Hech narsa topilmadi' : 'Bu transh bo\'yicha faktura yo\'q'}</div>`);
+  box.querySelectorAll('.inv').forEach(c => c.onclick = e => {
     if (e.target.closest('.btn2')) return;
     if (FOpen === c.dataset.k) { FOpen = null; dropSub('inv'); }
     else { FOpen = c.dataset.k; pushSub('inv', () => { FOpen = null; renderFaktura(); }, 'Fakturalar ro\'yxati'); }
     renderFaktura();
   });
-  const op = el.querySelector('.inv.open'); if (op) op.scrollIntoView({block: 'center'});
 }
 function invCard(a) {
   const open = FOpen === a.key;
@@ -358,7 +443,8 @@ function xatoByFaktura(f) {
 
 /* ---------- XATOLIKLARNI EXCEL'GA ---------- */
 async function xatoExcel(extra, btn) {
-  const body = Object.assign({tr: F.tr, oy: F.oy, k: XF.k, filial: XF.filial, tur: XF.tur, q: XF.q}, extra || {});
+  const fs = XF.filial ? [...new Set(XR.filter(r => nk(r.filial).includes(nk(XF.filial))).map(r => r.filial))] : [];
+  const body = Object.assign({tr: F.tr, oy: F.oy, k: XF.k, filial: '', filiallar: fs, tur: XF.tur, q: XF.q}, extra || {});
   if (extra && extra.faktura) Object.assign(body, {k: 'all', filial: '', tur: '', q: ''});
   const t = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'Yuborilmoqda…'; }
@@ -381,15 +467,16 @@ function renderXato() {
       ${[['all', 'Hammasi'], ['q', 'Qimmat (zarar)'], ['a', 'Arzon'], ['o', 'Boshqa']].map(([k, t]) => `<button class="chip ${XF.k === k ? 'on' : ''}" data-k="${k}">${t}</button>`).join('')}
     </div>
     <div class="g2" style="margin-bottom:8px">
-      <select id="xf"><option value="">Barcha filial</option>${fil.map(f => `<option value="${esc(f)}" ${XF.filial === f ? 'selected' : ''}>${E(f)}</option>`).join('')}</select>
+      <div><input id="xf" list="xfl" placeholder="🔍 Do'kon (${fil.length} ta)" value="${esc(XF.filial)}" autocomplete="off">
+        <datalist id="xfl">${fil.map(f => `<option value="${esc(f)}">`).join('')}</datalist></div>
       <select id="xt"><option value="">Barcha tur</option>${tur.map(f => `<option value="${esc(f)}" ${XF.tur === f ? 'selected' : ''}>${E(f)}</option>`).join('')}</select>
     </div>
-    <input id="xq" placeholder="Tovar kodi yoki faktura №" value="${esc(XF.q)}" style="margin-bottom:10px">
+    <input id="xq" placeholder="Tovar kodi, faktura № yoki do'kon" value="${esc(XF.q)}" style="margin-bottom:10px">
     <div class="rw" style="margin:0 4px 8px"><span id="xs" class="mut"></span>
       ${can('hisobot') ? `<button class="btn2" id="xexcel">📑 Excel</button>` : ''}</div>
     <div id="xl"></div>`;
   el.querySelectorAll('#xk .chip').forEach(b => b.onclick = () => { XF.k = b.dataset.k; renderXato(); });
-  $('#xf').onchange = e => { XF.filial = e.target.value; listXato(); };
+  $('#xf').oninput = e => { XF.filial = e.target.value; listXato(); };
   $('#xt').onchange = e => { XF.tur = e.target.value; listXato(); };
   $('#xq').oninput = e => { XF.q = e.target.value; listXato(); };
   const xb = $('#xexcel'); if (xb) xb.onclick = () => xatoExcel({}, xb);
@@ -400,8 +487,8 @@ function listXato() {
   const q = XF.q.trim().toLowerCase();
   const rs = XR.filter(r => (XF.k === 'all' || (XF.k === 'q' && r.holat.includes('ҚИММАТ')) || (XF.k === 'a' && r.holat.includes('арзон')) ||
       (XF.k === 'o' && !r.holat.includes('ҚИММАТ') && !r.holat.includes('арзон')))
-    && (!XF.filial || r.filial === XF.filial) && (!XF.tur || r.tur === XF.tur)
-    && (!q || (r.kod + ' ' + r.faktura + ' ' + r.nomi).toLowerCase().includes(q)));
+    && (!XF.filial || nk(r.filial).includes(nk(XF.filial))) && (!XF.tur || r.tur === XF.tur)
+    && (!q || (r.kod + ' ' + r.faktura + ' ' + r.nomi).toLowerCase().includes(q) || nk(r.filial).includes(nk(q))));
   const sum = rs.reduce((s, r) => s + (r.farq || 0), 0);
   $('#xs').textContent = `${rs.length} pozitsiya · farq ${sgn(sum)} $`;
   $('#xl').innerHTML = rs.length ? rs.slice(0, 300).map(r => {
@@ -431,11 +518,12 @@ async function loadTransh() {
     el.innerHTML = `
     <button class="btn" id="newbtn">+ Yangi transh (pul berildi)</button>
     <div id="newform"></div>
-    <div class="sec">Transhlar</div>
-    ${d.transhlar.slice().reverse().map(t => {
+    <div class="sec">Transhlar · tepadagi birinchi ishlatiladi</div>
+    ${d.transhlar.slice().sort((a, b) => a.no - b.no).map((t, qi) => {
       const closed = !!t.yopilgan_sana, cls = closed ? 'n' : (t.holat === 'Фаол' ? 'g' : t.holat === 'Тугаган' ? 'n' : 'a');
       const pct = t.summa ? Math.min(100, (t.used || 0) / t.summa * 100) : 0;
       return `<div class="card">
+        <div class="mut" style="font-size:12px;margin-bottom:2px">${qi + 1}-navbat${qi === 0 ? ' · birinchi tugaydi' : ''}</div>
         <div class="rw"><b>Transh №${t.no} · ${dmy(t.sana)}</b><span class="bd ${cls}">${closed ? 'Yopilgan ' + dm(t.yopilgan_sana) : holatL(t.holat)}</span></div>
         <div class="mut">${usd(t.summa)} · birja ${t.birja} · lom ${fmt(t.lom, 2)}</div>
         <div class="bar"><i style="width:${Math.max(1, pct)}%"></i></div>
@@ -461,6 +549,13 @@ async function loadTransh() {
     }
     $('#chegb').onclick = async () => { try { await api('/api/chegara', {v: $('#cheg').value}); haptic('success'); toast('Saqlandi'); invalidate(); } catch (e) { toast(e.message); } };
   } catch (e) { fail(el, e); }
+}
+async function vqYop(no, y) {
+  const msg = y ? `Vozvrat ${no}-qismni yakunlaymi? Endi yangi fakturalar pullar va vozvrat ro'yxati (1-qism) bo'yicha tekshiriladi.` : `Vozvrat ${no}-qismni qayta ochaymi?`;
+  const go = await new Promise(res => tg && tg.showConfirm && tg.initData ? tg.showConfirm(msg, res) : res(confirm(msg)));
+  if (!go) return;
+  try { await api('/api/vozvrat/yop', {no, yop: y}); haptic('success'); toast(y ? 'Yakunlandi' : 'Ochildi'); invalidate(); loadHolat(); }
+  catch (e) { toast(e.message); }
 }
 async function yop(no, sana) {
   const msg = sana ? `Transh №${no} ni yopaymi? Endi yangi fakturalar faqat joriy (keyingi) transh narxida tekshiriladi. Oldin tekshirilganlar o'zgarmaydi.` : `Transh №${no} ni qayta ochaymi?`;
@@ -525,39 +620,34 @@ async function loadAdmin(d) {
     ${d.pending.length ? d.pending.map(p => `<div class="card alert">
         <div class="rw"><b>${esc(p.name) || 'Noma\'lum'}</b><span class="mut">ID ${p.id}</span></div>
         <div class="mut" style="margin:4px 0 10px">Botga kirmoqchi — ruxsat berasizmi?</div>
-        <div class="rw" style="gap:6px;justify-content:flex-start">
-          <button class="btn2" style="background:var(--grn-bg);color:var(--grn)" onclick="adm('approve',${p.id},'user')">✅ Foydalanuvchi</button>
+        <div class="rw" style="gap:6px;justify-content:flex-start;flex-wrap:wrap">
+          <button class="btn2" style="background:var(--grn-bg);color:var(--grn)" onclick="adm('approve',${p.id},'tekshiruvchi')">🔍 Tekshiruvchi</button>
+          <button class="btn2" style="background:var(--grn-bg);color:var(--grn)" onclick="adm('approve',${p.id},'koruvchi')">👁 Ko'ruvchi</button>
           <button class="btn2" style="background:var(--amb-bg);color:var(--amb)" onclick="adm('approve',${p.id},'admin')">👑 Admin</button>
           <button class="btn2" style="background:var(--red-bg);color:var(--red)" onclick="adm('reject',${p.id})">❌ Rad</button>
         </div></div>`).join('') : '<div class="card empty">Yangi so\'rov yo\'q</div>'}
     <div class="sec">Foydalanuvchilar · ${d.users.length} ta</div>
     <div class="card">${d.users.map(u => `<div style="padding:8px 0;border-bottom:1px solid var(--line)">
         <div class="rw"><div style="font-weight:600;min-width:0">${esc(u.name) || '—'}</div>${ROLE(u.role)}</div>
+        ${u.role !== 'admin' && !u.asosiy ? `<div class="mut" style="font-size:12px">${PRESET_L[u.preset] || '⚙️ Maxsus ruxsat'}</div>` : ''}
         <div class="rw" style="margin-top:4px"><div class="mut">ID ${u.id}${u.sana ? ' · ' + dmy(u.sana) : ''}</div>
         <div class="rw" style="gap:6px">${u.asosiy ? '' : `
           ${u.role === 'admin' ? '' : `<button class="btn2" title="Nimalarni ko'radi" onclick="permOpen(${u.id})">⚙️</button>`}
           <button class="btn2" title="Rolni almashtirish" onclick="adm('role',${u.id},'${u.role === 'admin' ? 'user' : 'admin'}')">🔁</button>
           <button class="btn2" title="O'chirish" onclick="admDel(${u.id},'${esc(u.name)}')">🗑</button>`}</div></div></div>
         ${PERM_OPEN === u.id && u.role !== 'admin' ? `<div style="background:var(--bg);border-radius:12px;padding:10px 12px;margin:6px 0 10px">
-          <div class="mut" style="margin-bottom:6px">Nimalarni ko'radi va qila oladi (darhol saqlanadi):</div>
+          <div class="mut" style="margin-bottom:6px">Tayyor to'plam:</div>
+          <div class="rw" style="gap:6px;justify-content:flex-start;flex-wrap:wrap;margin-bottom:10px">${Object.entries(PRESET_L).map(([k, t]) =>
+            `<button class="btn2" style="${u.preset === k ? 'background:var(--grn-bg);color:var(--grn);font-weight:600' : ''}" onclick="adm('preset',${u.id},'${k}')">${t}</button>`).join('')}</div>
+          <div class="mut" style="margin-bottom:6px">Yoki bittama-bitta (darhol saqlanadi):</div>
           ${Object.entries(PERM_L).map(([k, t]) => `<label class="rw" style="justify-content:flex-start;gap:10px;padding:6px 0;font-size:14px">
             <input type="checkbox" style="width:20px;height:20px" ${(u.perms || []).includes(k) ? 'checked' : ''} onchange="permSet(${u.id}, this)" data-pk="${k}">${t}</label>`).join('')}
         </div>` : ''}`).join('')}</div>
-    <div class="sec">Odam qo'shish</div>
-    <div class="card">
-      <div class="sm" style="margin-bottom:8px">Taklif havolasi — 24 soat amal qiladi, bir marta ishlaydi. Havolani odamga yuborasiz, u bosib «Start» ni bossa, o'zi qo'shiladi.</div>
-      <div class="rw" style="gap:8px"><button class="btn2" style="flex:1;padding:11px" onclick="admInv('user')">🔗 Foydalanuvchi uchun</button>
-        <button class="btn2" style="flex:1;padding:11px" onclick="admInv('admin')">🔗 Admin uchun</button></div>
-      <div id="inv-out"></div>
-      <label class="f" style="margin-top:14px">Yoki Telegram ID bilan (u botga /myid yozib biladi)</label>
-      <div class="rw" style="gap:8px"><input id="adm-id" inputmode="numeric" placeholder="512334871" style="flex:1">
-        <select id="adm-role" style="width:130px"><option value="user">Foydalanuvchi</option><option value="admin">Admin</option></select></div>
-      <button class="btn" style="margin-top:8px" onclick="admAdd()">Qo'shish</button>
-      <div class="mut" style="margin-top:10px">${d.invites} ta faol taklif havolasi bor. Notanish odam botga kirsa, so'rovi shu yerga va sizga Telegram'da keladi.</div>
-    </div>`;
+`;
   } catch (e) { fail(el, e); }
 }
 let PERM_OPEN = null, ADM = null;
+const PRESET_L = {tekshiruvchi: '🔍 Tekshiruvchi', koruvchi: '👁 Ko\'ruvchi', boshqaruvchi: '💳 Boshqaruvchi'};
 const PERM_L = {holat: '📊 Holat (qoldiq, umumiy)', faktura: '🧾 Faktura bo\'limi', xatolar: '⚠️ Xatoliklar',
   transhlar: '💳 Transhlar va narxlar (ko\'rish)', faktura_yuklash: '📥 Faktura yuklash (botga)', vozvrat_yuklash: '↩️ Vozvrat ro\'yxatini yuklash',
   transh_qoshish: '➕ Transh qo\'shish / yopish, chegara', hisobot: '📑 Excel hisobot olish'};
@@ -573,7 +663,7 @@ async function permSet(id, el) {
 }
 async function adm(act, id, role) {
   try { const d = await api('/api/admin', {act, id, role}); haptic('success');
-    if ((act === 'approve' || act === 'add') && role !== 'admin') { PERM_OPEN = +id; pushSub('perm', () => { PERM_OPEN = null; loadAdmin(ADM); }, 'Foydalanuvchilar'); }
+    if ((act === 'approve' || act === 'add') && role !== 'admin' && !PRESET_L[role]) { PERM_OPEN = +id; pushSub('perm', () => { PERM_OPEN = null; loadAdmin(ADM); }, 'Foydalanuvchilar'); }
     if (act === 'delete' && PERM_OPEN === +id) { PERM_OPEN = null; dropSub('perm'); }
     toast(act === 'approve' ? 'Ruxsat berildi — endi nimalarni ko\'rishini belgilang' : act === 'reject' ? 'Rad etildi' : act === 'role' ? 'Rol o\'zgardi' : 'Bajarildi'); loadAdmin(d); }
   catch (e) { toast(e.message); }
@@ -592,7 +682,7 @@ async function admInv(role) {
   try { const d = await api('/api/admin', {act: 'invite', role});
     await loadAdmin(d);
     $('#inv-out').innerHTML = `<div class="card" style="background:var(--bg);margin:10px 0 0;padding:10px">
-      <div class="mut">${role === 'admin' ? '👑 Admin' : '👤 Foydalanuvchi'} uchun havola:</div>
+      <div class="mut">${PRESET_L[role] || '👑 Admin'} uchun havola (muddatsiz):</div>
       <div style="word-break:break-all;font-size:13px;margin:6px 0">${esc(d.link)}</div>
       <button class="btn2" onclick="navigator.clipboard && navigator.clipboard.writeText('${esc(d.link)}').then(() => toast('Nusxalandi'))">📋 Nusxalash</button></div>`;
     haptic('success');
@@ -604,6 +694,7 @@ const can = p => !ME || !ME.perms || ME.perms.includes(p);
 initMe().then(() => {
   document.querySelectorAll('.tab').forEach(t => { const p = TAB_PERM[t.dataset.p]; if (p && !can(p)) t.style.display = 'none'; });
   if (location.hash === '#admin' && ME && ME.admin) return show('admin');
+  if (location.hash === '#yuklash' && can('faktura')) { show('faktura'); return setTimeout(() => { const c = $('#upcard'); if (c) c.scrollIntoView(); }, 600); }
   const first = Object.keys(TAB_PERM).find(k => can(TAB_PERM[k]));
   if (first) show(first);
   else $('#p-holat').innerHTML = '<div class="card empty">Sizga hali hech qanday bo\'lim ochilmagan. Adminga murojaat qiling.</div>';

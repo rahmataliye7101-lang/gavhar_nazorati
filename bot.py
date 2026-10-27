@@ -17,7 +17,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.constants import ChatAction
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters)
 
@@ -76,6 +76,18 @@ VOZVRAT_2 = {"no": 2, "sana": "2026-10-27", "summa_usd": 208422, "birja": 149.94
              "narxlar": {"Бриллиант": 99.52, "Вакс": 97.41, "Кузсиз": 97.41, "Дорика": 100.05, "Фианит": 95.82,
                          "Браслет": 100.05, "Детский": 100.05, "Ван Клиф": 100.05},
              "manba": "Фойдаланувчи 27.10.2026: қўшимча возврат 208 422 $, биржа 149.94"}
+
+
+def volume_yoq():
+    """Railway да Volume уланмаган бўлса True — ҳар деплойда маълумот ўчиб кетади."""
+    import os
+    return bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID")) and \
+        not os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+
+
+VOLUME_OGOH = ("⚠️ ДИҚҚАТ: Railway да Volume уланмаган!\n"
+               "GitHub га янги файл юклаганингизда (ёки сервер қайта ишга тушганда) траншлар, фактуралар ва возвратлар ЎЧИБ КЕТАДИ.\n"
+               "Тузатиш: Railway → сервис → «Attach volume» → Mount path: /data → Deploy.")
 
 
 def ensure_data():
@@ -171,7 +183,7 @@ def is_admin(update: Update) -> bool:
     return bool(u and admin_id(u.id))
 
 
-def add_user(uid, role="user", name="", by=None):
+def add_user(uid, role="user", name="", by=None, perms=None):
     u = load_users()
     name = name or u.get("names", {}).get(str(uid), "")
     rec = next((x for x in u["users"] if int(x["id"]) == int(uid)), None)
@@ -180,7 +192,10 @@ def add_user(uid, role="user", name="", by=None):
         if name:
             rec["name"] = name
     else:
-        u["users"].append({"id": int(uid), "role": role, "name": name, "added_by": by, "sana": str(dt.date.today())})
+        rec = {"id": int(uid), "role": role, "name": name, "added_by": by, "sana": str(dt.date.today())}
+        u["users"].append(rec)
+    if perms is not None:
+        rec["perms"] = [p for p in PERMS if p in perms]
     u["pending"] = [p for p in u["pending"] if int(p) != int(uid)]
     save_users(u)
 
@@ -201,7 +216,8 @@ async def deny(update: Update, ctx=None):
     user = update.effective_user
     uid = user.id if user else "?"
     await update.effective_message.reply_text(
-        f"⛔ Рухсат йўқ. Сизнинг ID: {uid}\nАдминга сўров юборилди — тасдиқлангач, /start ни қайта босинг.")
+        "🟡 Gavhar — тилло нарх назорати\n\n"
+        "✅ Сўровингиз админга юборилди. Админ тасдиқлагач, сизга шу ерда хабар келади — кейин /start ни босинг.")
     if not user:
         return
     u = load_users()
@@ -211,9 +227,10 @@ async def deny(update: Update, ctx=None):
     u.setdefault("names", {})[str(uid)] = uname(user)
     save_users(u)
     bot = ctx.bot if ctx is not None else update.get_bot()
-    rows_kb = [[InlineKeyboardButton("✅ Фойдаланувчи", callback_data=f"ad_ok:{uid}:user"),
-                InlineKeyboardButton("👑 Админ", callback_data=f"ad_ok:{uid}:admin")],
-               [InlineKeyboardButton("❌ Рад этиш", callback_data=f"ad_no:{uid}")]]
+    rows_kb = [[InlineKeyboardButton("🔍 Текширувчи", callback_data=f"ad_ok:{uid}:user:tekshiruvchi"),
+                InlineKeyboardButton("👁 Кўрувчи", callback_data=f"ad_ok:{uid}:user:koruvchi")],
+               [InlineKeyboardButton("👑 Админ", callback_data=f"ad_ok:{uid}:admin"),
+                InlineKeyboardButton("❌ Рад этиш", callback_data=f"ad_no:{uid}")]]
     if WEBAPP_URL:
         from telegram import WebAppInfo
         rows_kb.append([InlineKeyboardButton("📋 Admin бўлимида кўриш", web_app=WebAppInfo(url=WEBAPP_URL + "#admin"))])
@@ -256,6 +273,24 @@ PERMS = {
     "hisobot": "📑 Excel ҳисобот олиш",
 }
 DEFAULT_PERMS = ["holat", "faktura", "xatolar", "transhlar", "faktura_yuklash", "hisobot"]
+# Тайёр рухсат тўпламлари
+PRESETS = {
+    "tekshiruvchi": ("🔍 Текширувчи — юклайди ва текширади",
+                     ["holat", "faktura", "xatolar", "transhlar", "faktura_yuklash", "vozvrat_yuklash", "hisobot"]),
+    "koruvchi": ("👁 Кўрувчи — фақат кўради", ["holat", "faktura", "xatolar", "transhlar"]),
+    "boshqaruvchi": ("💳 Бошқарувчи — пул ҳам киритади", list(PERMS)),
+}
+
+
+def preset_of(perms):
+    ps = set(perms or [])
+    return next((k for k, (_, v) in PRESETS.items() if set(v) == ps), "")
+
+
+def inv_ok(v, now=None):
+    """Таклиф ҳаволаси амалдами (муддатсиз — exp йўқ)."""
+    e = v.get("exp")
+    return not e or e > (now or dt.datetime.now().isoformat())
 
 
 def user_perms(uid):
@@ -293,7 +328,10 @@ def need(perm):
 
 def perm_kb(uid):
     cur = set(user_perms(uid))
-    rows = [[InlineKeyboardButton(("✅ " if p in cur else "⬜ ") + t, callback_data=f"ad_pt:{uid}:{p}")] for p, t in PERMS.items()]
+    pk = preset_of(cur)
+    rows = [[InlineKeyboardButton(("● " if pk == k else "") + t.split(" — ")[0], callback_data=f"ad_ps:{uid}:{k}")]
+            for k, (t, _) in PRESETS.items()]
+    rows += [[InlineKeyboardButton(("✅ " if p in cur else "⬜ ") + t, callback_data=f"ad_pt:{uid}:{p}")] for p, t in PERMS.items()]
     rows.append([InlineKeyboardButton("⬅️ Рўйхатга қайтиш", callback_data="ad_back")])
     return InlineKeyboardMarkup(rows)
 
@@ -301,7 +339,8 @@ def perm_kb(uid):
 def perm_text(uid):
     r = user_rec(uid) or {}
     return (f"⚙️ Рухсатлар: {r.get('name') or uid} (ID {uid})\n"
-            "Белгиланганларини кўради ва қила олади. Босиб ёқинг/ўчиринг — дарҳол сақланади.")
+            "Тепадаги тайёр тўпламдан бирини танланг ёки пастда биттама-битта ёқинг/ўчиринг — дарҳол сақланади.\n"
+            + "\n".join(f"{t}" for t, _ in PRESETS.values()))
 
 
 ROLE_L = {"admin": "👑 админ", "user": "👤 фойдаланувчи"}
@@ -315,12 +354,12 @@ def admin_panel():
     for x in u["users"]:
         if int(x["id"]) in ALLOWED:
             continue
-        lines.append(f"{ROLE_L.get(x.get('role'), x.get('role'))} {x.get('name') or '—'} · {x['id']}")
+        pk = preset_of(x.get("perms", DEFAULT_PERMS)) if x.get("role") != "admin" else ""
+        lines.append(f"{ROLE_L.get(x.get('role'), x.get('role'))} {x.get('name') or '—'} · {x['id']}"
+                     + (f" · {PRESETS[pk][0].split(' — ')[0]}" if pk else (" · махсус рухсат" if x.get("role") != "admin" else "")))
     if len(lines) == 2:
         lines.append("(ҳали ҳеч ким қўшилмаган)")
-    rows = [[InlineKeyboardButton("➕ Ҳавола: фойдаланувчи", callback_data="ad_inv:user"),
-             InlineKeyboardButton("➕ Ҳавола: админ", callback_data="ad_inv:admin")],
-            [InlineKeyboardButton("✍️ ID билан қўшиш", callback_data="ad_id")]]
+    rows = []
     for x in u["users"]:
         if int(x["id"]) in ALLOWED:
             continue
@@ -329,8 +368,7 @@ def admin_panel():
         rows.append([InlineKeyboardButton(f"⚙️ {nm}", callback_data=f"ad_perm:{x['id']}"),
                      InlineKeyboardButton("🔁 " + ("фойд." if other == "user" else "админ"), callback_data=f"ad_role:{x['id']}:{other}"),
                      InlineKeyboardButton("🗑", callback_data=f"ad_del:{x['id']}")])
-    lines += ["", "Одам қўшиш: ҳавола яратиб юборинг (24 соат, бир марта), ёки у ботга /myid ёзиб берган ID ни киритинг. "
-              "Нотаниш одам ботга кирса, сизга тасдиқлаш тугмаси келади."]
+    lines += ["", "Ботга янги одам кирса, сизга рухсат сўрови келади — Текширувчи / Кўрувчи / Админ ни танлаб тасдиқлайсиз."]
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
@@ -347,19 +385,25 @@ async def admin_cb(update: Update, ctx):
     await q.answer()
     parts = q.data.split(":")
     act = parts[0]
+    if act == "ad_link":
+        me = await ctx.bot.get_me()
+        return await q.message.reply_text(
+            f"🔗 Ботга кириш ҳаволаси (ўчиб кетмайди):\nhttps://t.me/{me.username}?start=sorov\n\n"
+            "Шуни одамга юборинг. У «Start» ни босса, сизга рухсат сўрови келади — тасдиқлаб, нима кўришини танлайсиз.")
     if act == "ad_inv":
         role = parts[1]
+        preset = parts[2] if len(parts) > 2 and parts[2] in PRESETS else ("" if role == "admin" else "tekshiruvchi")
         import secrets
         code = secrets.token_urlsafe(8)
         u = load_users()
-        now = dt.datetime.now()
-        u["invites"] = {k: v for k, v in u["invites"].items() if v["exp"] > now.isoformat()}
-        u["invites"][code] = {"role": role, "exp": (now + dt.timedelta(hours=24)).isoformat(), "by": update.effective_user.id}
+        u["invites"] = {k: v for k, v in u["invites"].items() if inv_ok(v)}
+        u["invites"][code] = {"role": role, "preset": preset, "exp": None, "by": update.effective_user.id}
         save_users(u)
         me = await ctx.bot.get_me()
         link = f"https://t.me/{me.username}?start=inv_{code}"
+        nom = ROLE_L[role] if role == "admin" else PRESETS[preset][0]
         return await q.message.reply_text(
-            f"🔗 Таклиф ҳаволаси ({ROLE_L[role]}), 24 соат амал қилади, бир марта ишлайди:\n{link}\n\n"
+            f"🔗 Таклиф ҳаволаси ({nom}).\nМуддатсиз — ўчиб кетмайди, бир марта ишлайди:\n{link}\n\n"
             "Шу ҳаволани қўшмоқчи бўлган одамга юборинг — у босиб «Start» ни босса, ўзи қўшилади.")
     if act == "ad_id":
         ctx.user_data["await_admin_id"] = True
@@ -367,8 +411,9 @@ async def admin_cb(update: Update, ctx):
                                           "ID ни у ботга /myid ёзиб билади.")
     if act == "ad_ok":
         uid, role = int(parts[1]), parts[2]
-        add_user(uid, role, by=update.effective_user.id)
-        await q.edit_message_text(q.message.text + f"\n\n✅ Қўшилди ({ROLE_L[role]}).",
+        preset = parts[3] if len(parts) > 3 and parts[3] in PRESETS else ""
+        add_user(uid, role, by=update.effective_user.id, perms=PRESETS[preset][1] if preset else None)
+        await q.edit_message_text(q.message.text + f"\n\n✅ Қўшилди ({PRESETS[preset][0] if preset else ROLE_L[role]}).",
                                   reply_markup=None if role == "admin" else InlineKeyboardMarkup(
                                       [[InlineKeyboardButton("⚙️ Нималарни кўришини белгилаш", callback_data=f"ad_perm:{uid}")]]))
         try:
@@ -387,6 +432,11 @@ async def admin_cb(update: Update, ctx):
         if admin_id(uid):
             return await q.message.reply_text("👑 Админда ҳамма рухсатлар бор. Чеклаш учун аввал 🔁 билан фойдаланувчи қилинг.")
         return await q.message.reply_text(perm_text(uid), reply_markup=perm_kb(uid))
+    if act == "ad_ps":
+        uid, k = int(parts[1]), parts[2]
+        if k in PRESETS:
+            set_perms(uid, PRESETS[k][1])
+        return await q.edit_message_reply_markup(reply_markup=perm_kb(uid))
     if act == "ad_pt":
         uid, p = int(parts[1]), parts[2]
         cur = set(user_perms(uid))
@@ -409,19 +459,21 @@ async def admin_cb(update: Update, ctx):
 async def accept_invite(update: Update, ctx, code) -> bool:
     u = load_users()
     inv = u["invites"].get(code)
-    if not inv or inv["exp"] < dt.datetime.now().isoformat():
+    if not inv or not inv_ok(inv):
         await update.effective_message.reply_text("⛔ Таклиф ҳаволаси эскирган ёки ишлатилган. Админдан янгисини сўранг.")
         return False
     del u["invites"][code]
     save_users(u)
     user = update.effective_user
-    add_user(user.id, inv["role"], uname(user), by=inv.get("by"))
+    pr = inv.get("preset") or ""
+    add_user(user.id, inv["role"], uname(user), by=inv.get("by"), perms=PRESETS[pr][1] if pr in PRESETS else None)
     for aid in admin_ids():
         if aid != user.id:
             try:
                 await ctx.bot.send_message(
                     aid, f"✅ {uname(user)} (ID {user.id}) ҳавола орқали қўшилди — {ROLE_L[inv['role']]}.\n"
-                         + ("Ҳозир стандарт рухсатлар берилди. Нималарни кўришини белгиланг:" if inv["role"] != "admin" else ""),
+                         + ((f"Рухсат: {PRESETS[pr][0]}. Ўзгартириш:" if pr in PRESETS else "Нималарни кўришини белгиланг:")
+                            if inv["role"] != "admin" else ""),
                     reply_markup=None if inv["role"] == "admin" else InlineKeyboardMarkup(
                         [[InlineKeyboardButton("⚙️ Нималарни кўришини белгилаш", callback_data=f"ad_perm:{user.id}")]]))
             except Exception:
@@ -589,7 +641,7 @@ async def confirm_transh(update: Update, ctx, p):
                 no = max((t["no"] for t in cfg["transhlar"]), default=0) + 1
                 cfg["transhlar"].append({"no": no, "sana": p["sana"], "summa_usd": p["summa"], "birja_999": p["birja"],
                                          "narxlar": p["narxlar"], "manba": f"Telegram бот, {dt.date.today()}", "yopilgan_sana": None})
-                cfg["transhlar"].sort(key=lambda t: t["sana"])
+                cfg["transhlar"].sort(key=lambda t: t["no"])
                 undo, head = f"tr_undo:trnew:{no}:0", f"💳 Янги транш №{no} қўшилди\n📅 {sana} · 💵 {p['summa']:,.0f} $ · биржа {p['birja']}"
                 body = "\n".join(notes)
         save_cfg(cfg)
@@ -629,8 +681,8 @@ async def transh_flow(update: Update, ctx, text):
         return True
     await update.effective_message.reply_text(
         f"📥 Хабарда {len(ps)} та транш топилди: " + ", ".join(f"{nazorat._dmy(p['sana'])} — {p['summa']:,.0f} $" for p in ps)
-        + ".\nСанаси бўйича навбат билан қўшаман (олдин эскиси).")
-    for b in sorted(blocks, key=lambda b: parse_transh(b)["sana"] or ""):
+        + ".\nЁзилган тартибда қўшаман: тепадаги — 1-навбат (биринчи тугайди).")
+    for b in blocks:
         await transh_flow_one(update, ctx, b)
     return True
 
@@ -746,7 +798,7 @@ async def transh_cb(update: Update, ctx):
         no = max((t["no"] for t in cfg["transhlar"]), default=0) + 1
         cfg["transhlar"].append({"no": no, "sana": p["sana"], "summa_usd": p["summa"], "birja_999": p["birja"],
                                  "narxlar": p["narxlar"], "manba": f"Telegram бот, {dt.date.today()}", "yopilgan_sana": None})
-        cfg["transhlar"].sort(key=lambda t: t["sana"])
+        cfg["transhlar"].sort(key=lambda t: t["no"])
         save_cfg(cfg)
     await q.edit_message_text(q.message.text.replace("Сақлайми?", f"✅ Транш №{no} сақланди."))
     await run_and_reply(update)
@@ -770,6 +822,83 @@ async def yop(update: Update, ctx):
         save_cfg(cfg)
     await update.message.reply_text(f"🔒 Транш №{a[0]} ёпилди. Энди янги фактуралар фақат жорий транш нархида текширилади.")
     await run_and_reply(update)
+
+
+def vozvrat_qism_yop(no, yop=True):
+    """Возврат қисмини якунлаш / қайта очиш. Хато матни ёки None қайтаради."""
+    cfg = load_cfg()
+    if no == 1:
+        q = cfg.setdefault("vozvrat_1", {})
+    else:
+        q = next((x for x in cfg.get("vozvrat_qismlar", []) if x["no"] == no), None)
+    if q is None:
+        return "Бундай возврат қисми йўқ."
+    q["yopilgan_sana"] = dt.date.today().isoformat() if yop else None
+    q["yopilgan_qator"] = len(nazorat.load_ledger(str(LEDGER))) if yop else None
+    save_cfg(cfg)
+    return None
+
+
+@need("transh_qoshish")
+async def vozvrat_yop(update: Update, ctx):
+    a = ctx.args
+    if not a or not a[0].isdigit():
+        cfg = load_cfg()
+        nos = ", ".join(str(q["no"]) for q in cfg.get("vozvrat_qismlar", [])) or "йўқ"
+        return await update.message.reply_text(f"Мисол: /vozvrat_yop 2\n1 — возврат рўйхати (617 минг); суммали қисмлар: {nos}")
+    async with LOCK:
+        err = vozvrat_qism_yop(int(a[0]), True)
+    if err:
+        return await update.message.reply_text(err)
+    await update.message.reply_text(
+        f"🔒 Возврат {a[0]}-қисм якунланди. Энди янги фактуралар "
+        + ("фақат пуллар ва бошқа очиқ возвратлар" if a[0] == "1" else "пуллар ва возврат рўйхати (1-қисм)") + " бўйича текширилади.\n"
+        f"Қайта очиш: /vozvrat_och {a[0]}")
+    await run_and_reply(update)
+
+
+@need("transh_qoshish")
+async def vozvrat_och(update: Update, ctx):
+    a = ctx.args
+    if not a or not a[0].isdigit():
+        return await update.message.reply_text("Мисол: /vozvrat_och 2")
+    async with LOCK:
+        err = vozvrat_qism_yop(int(a[0]), False)
+    await update.message.reply_text(err or f"🔓 Возврат {a[0]}-қисм қайта очилди.")
+
+
+@need("faktura_yuklash")
+async def oylik(update: Update, ctx):
+    ctx.user_data["oylik_mode"] = True
+    await update.message.reply_text(
+        "📅 Ойлик приход файлини (Excel) ташланг.\n"
+        "Бот ҳамма товарни 1, 2-пул ва возвратлар бўйича қайта текшириб, ойлик хулоса беради. Реестр ўзгармайди.")
+
+
+async def handle_oylik_file(update: Update, path):
+    msg = update.effective_message
+    await msg.chat.send_action(ChatAction.TYPING)
+    async with LOCK:
+        cfg = load_cfg()
+        ledger = nazorat.load_ledger(str(LEDGER))
+        rets = nazorat.load_returns(str(VOZVRAT))
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / f"Oylik_tekshiruv_{dt.date.today():%Y-%m-%d}.xlsx"
+        try:
+            mr, text = await asyncio.to_thread(nazorat.oylik_tekshir, cfg, ledger, rets, [str(path)], str(out))
+        except Exception:
+            log.exception("oylik")
+            return await msg.reply_text("❌ Файлни ўқиб бўлмади. Excel (.xlsx) приход эканини текширинг.")
+        await send_long(msg, text)
+        if mr and out.exists() and has_perm(update.effective_user.id, "hisobot"):
+            with open(out, "rb") as f:
+                await msg.reply_document(f, filename=out.name, caption="📑 Ойлик текширув")
+            bad = [r for r in mr if str(r.get("holat", "")).startswith("⚠")]
+            if bad:
+                ep = Path(td) / f"Oylik_xatoliklar_{dt.date.today():%Y-%m-%d}.xlsx"
+                await asyncio.to_thread(nazorat.write_errors_report, str(ep), mr, "Ойлик приход — хатоликлар", rets)
+                with open(ep, "rb") as f:
+                    await msg.reply_document(f, filename=ep.name, caption="❌ Ойлик хатоликлар (Gavhar га эътироз учун)")
 
 
 @need("transh_qoshish")
@@ -860,13 +989,63 @@ async def handle_returns_file(update: Update, path, name):
     if not rows:
         return await update.message.reply_text(
             "❌ Возврат рўйхати ўқилмади. Устунлар: «Товар номи» ёки «Артикул», «Грамм», «Сумма» (ёки «1 гр нархи»).")
+    old = [r for r in nazorat.load_returns(str(VOZVRAT)) if r.get("chiqdi_qator") is None and not r.get("chiqdi_sana")]
+    nk = {nazorat.ret_key(r) for r in rows}
+    gone = sum(1 for r in old if nazorat.ret_key(r) not in nk)
+    if old and gone > 0.3 * len(old):  # кўпи йўқолди — тўлиқ рўйхатми ёки қўшимчами, сўраймиз
+        RET_PENDING[update.effective_user.id] = rows
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Бу тўлиқ рўйхат (+ ва −)", callback_data="rv_full")],
+                                   [InlineKeyboardButton("➕ Фақат қўшимча (қўшиш)", callback_data="rv_add")],
+                                   [InlineKeyboardButton("❌ Бекор", callback_data="rv_no")]])
+        return await update.message.reply_text(
+            f"↩️ Файлда {len(rows)} та товар. Ҳозирги рўйхатдаги {len(old)} тадан {gone} таси бу файлда йўқ.\n"
+            "Бу файл возвратнинг ТЎЛИҚ ЖОРИЙ рўйхатими (йўқлари чиқарилади) ёки фақат ҚЎШИМЧАми?", reply_markup=kb)
+    await apply_returns(update, rows, False)
+
+
+RET_PENDING = {}
+
+
+async def apply_returns(update: Update, rows, faqat_qosh):
+    msg = update.effective_message
     async with LOCK:
         backup(VOZVRAT)
-        added, dup = nazorat.add_returns(str(VOZVRAT), rows)
-    await update.message.reply_text(
-        f"✅ Возврат рўйхати сақланди: {added} та товар қўшилди" + (f" ({dup} таси олдин бор эди)" if dup else "") + ".\n"
-        "Энди фактурада шу товар возврат нархида келса — тўғри деб ҳисобланади.")
+        st = nazorat.sync_returns(str(VOZVRAT), rows, len(nazorat.load_ledger(str(LEDGER))), faqat_qosh)
+    L = ["✅ Возврат рўйхати (1-қисм) янгиланди:"]
+    if st["plus"]:
+        L.append(f"   ➕ қўшилди: {st['plus']} та ({st['plus_s']:,.0f} $)")
+    if st["minus"]:
+        L.append(f"   ➖ чиқарилди: {st['minus']} та ({st['minus_s']:,.0f} $) — файлда йўқ")
+    if st["back"]:
+        L.append(f"   ↩️ қайта қўшилди: {st['back']} та")
+    if not (st["plus"] or st["minus"] or st["back"]):
+        L.append("   ўзгариш йўқ — рўйхат олдингидек")
+    L.append(f"📦 Ҳозир рўйхатда: {st['n']} та товар · {st['summa']:,.0f} $")
+    L.append("Чиқарилган товарлар олдин юкланган фактураларда возврат бўлиб қолади, янги фактураларда эса ҳисобланмайди.")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Бекор қилиш", callback_data="rv_undo")]])
+    await msg.reply_text("\n".join(L), reply_markup=kb)
     await run_and_reply(update)
+
+
+async def returns_cb(update: Update, ctx):
+    q = update.callback_query
+    if not allowed(update) or not has_perm(update.effective_user.id, "vozvrat_yuklash"):
+        return await q.answer("Рухсат йўқ", show_alert=True)
+    await q.answer()
+    if q.data == "rv_undo":
+        olds = sorted(BACKUP.glob(f"{VOZVRAT.stem}_*{VOZVRAT.suffix}"))
+        if not olds:
+            return await q.edit_message_text(q.message.text + "\n\n(нусха топилмади)")
+        async with LOCK:
+            shutil.copy(olds[-1], VOZVRAT)
+            olds[-1].unlink()
+        await q.edit_message_text(q.message.text + "\n\n↩️ Бекор қилинди — олдинги рўйхат қайтди.")
+        return await run_and_reply(update)
+    rows = RET_PENDING.pop(update.effective_user.id, None)
+    if q.data == "rv_no" or not rows:
+        return await q.edit_message_text("Бекор қилинди.")
+    await q.edit_message_text(q.message.text + ("\n\n→ Тўлиқ рўйхат" if q.data == "rv_full" else "\n\n→ Фақат қўшиш"))
+    await apply_returns(update, rows, q.data == "rv_add")
 
 
 @guard
@@ -875,11 +1054,22 @@ async def document(update: Update, ctx):
     name = doc.file_name or "faktura.xlsx"
     if not name.lower().endswith((".xlsx", ".xlsm")):
         return await update.message.reply_text("❌ Фақат Excel (.xlsx) файл ташланг.")
+    if (doc.file_size or 0) > 20 * 1024 * 1024:  # Telegram бот 20 МБ дан каттасини юклаб ололмайди
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📤 Mini app орқали юклаш", web_app=WebAppInfo(url=WEBAPP_URL + "#yuklash"))]]) \
+            if WEBAPP_URL else None
+        return await update.message.reply_text(
+            f"📦 Файл катта ({doc.file_size / 1024 / 1024:.1f} МБ). Telegram бот 20 МБ гача файлни олади.\n"
+            "Mini app → Faktura → «📤 Excel yuklash» орқали юкланг — у ерда чеклов йўқ.", reply_markup=kb)
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / name
         f = await doc.get_file()
         await f.download_to_drive(path)
         uid = update.effective_user.id
+        cap = (update.message.caption or "").lower()
+        if ctx.user_data.pop("oylik_mode", False) or re.search(r"ойлик|oylik|ойлик приход", cap):
+            if not has_perm(uid, "faktura_yuklash"):
+                return await update.message.reply_text(f"⛔ Сизда рухсат йўқ: {PERMS['faktura_yuklash']}.")
+            return await handle_oylik_file(update, path)
         if ctx.user_data.pop("vozvrat_mode", False) or await asyncio.to_thread(looks_like_returns, str(path), name):
             if not has_perm(uid, "vozvrat_yuklash"):
                 return await update.message.reply_text(f"⛔ Сизда рухсат йўқ: {PERMS['vozvrat_yuklash']}.")
@@ -896,6 +1086,16 @@ async def document(update: Update, ctx):
         except Exception as e:
             log.exception("read error")
             return await update.message.reply_text("❌ Файлни очиб бўлмади. Excel (.xlsx) эканини текширинг.")
+        if rows:
+            invs = {(r.get("faktura"), r.get("filial")) for r in rows}
+            ds = sorted({r.get("sana") for r in rows if r.get("sana")})
+            span = (dt.date.fromisoformat(ds[-1]) - dt.date.fromisoformat(ds[0])).days if ds else 0
+            if len(invs) > 5 or span > 3:  # кўп фактура / узоқ давр — бу ойлик (15 кунлик) приход, реестрга қўшмаймиз
+                bk.unlink(missing_ok=True)
+                await update.message.reply_text(
+                    f"📅 Бу ойлик/давр приходи кўринади ({len(invs)} та фактура, {nazorat._dmy(ds[0])} – {nazorat._dmy(ds[-1])}).\n"
+                    "Реестрга ҚЎШМАЙМАН — фақат текшириб хулоса бераман.")
+                return await handle_oylik_file(update, path)
         if not rows:
             return await update.message.reply_text(
                 "❌ Бу файлда фактура топилмади.\n"
@@ -934,7 +1134,7 @@ async def tozalash_cb(update: Update, ctx):
         async with LOCK:
             backup(VOZVRAT)
             nazorat.save_returns(str(VOZVRAT), [])
-            cfg = load_cfg(); cfg["vozvrat_qismlar"] = []; save_cfg(cfg)
+            cfg = load_cfg(); cfg["vozvrat_qismlar"] = []; cfg.pop("vozvrat_1", None); save_cfg(cfg)
         return await q.edit_message_text("✅ Возврат рўйхати ўчирилди. Янги рўйхатни /vozvrat орқали ташланг.")
     async with LOCK:
         backup(LEDGER)
