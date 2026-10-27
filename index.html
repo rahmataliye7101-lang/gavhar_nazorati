@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Gavhar nazorat</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/static/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:var(--tg-theme-secondary-bg-color,#f1f2f6);--card:var(--tg-theme-bg-color,#fff);--tx:var(--tg-theme-text-color,#14171f);
+  --mut:var(--tg-theme-hint-color,#8a8f99);--acc:var(--tg-theme-button-color,#2f80ed);--acc-tx:var(--tg-theme-button-text-color,#fff);
+  --line:rgba(127,127,127,.18);--red:#e5484d;--red-bg:rgba(229,72,77,.11);--grn:#30a46c;--grn-bg:rgba(48,164,108,.12);
+  --amb:#d97706;--amb-bg:rgba(217,119,6,.12)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;padding-bottom:calc(76px + env(safe-area-inset-bottom))}
+.wrap{max-width:560px;margin:0 auto;padding:12px 12px 8px}
+.card{background:var(--card);border-radius:16px;padding:14px;margin-bottom:10px}
+.sec{font-size:12px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin:16px 4px 8px}
+.big{font-size:32px;font-weight:700;letter-spacing:-.02em;margin:2px 0}
+.mut{color:var(--mut);font-size:13px}.sm{font-size:13px}
+.rw{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.g2 .card{margin:0}
+.lb{font-size:12px;color:var(--mut)}.v{font-size:18px;font-weight:700;margin-top:2px}
+.bar{height:7px;border-radius:6px;background:var(--line);overflow:hidden;margin:12px 0 6px}.bar i{display:block;height:100%;background:var(--acc);border-radius:6px}
+.bd{font-size:11.5px;font-weight:700;padding:4px 9px;border-radius:20px;white-space:nowrap}
+.bd.r{background:var(--red-bg);color:var(--red)}.bd.g{background:var(--grn-bg);color:var(--grn)}.bd.a{background:var(--amb-bg);color:var(--amb)}.bd.n{background:var(--line);color:var(--mut)}
+.red{color:var(--red)}.grn{color:var(--grn)}
+.btn{display:block;width:100%;border:0;border-radius:12px;padding:13px;font-size:15px;font-weight:600;background:var(--acc);color:var(--acc-tx);cursor:pointer}
+.btn:disabled{opacity:.5}
+.btn2{white-space:nowrap;border:0;border-radius:10px;padding:8px 12px;font-size:13.5px;font-weight:600;background:var(--line);color:var(--tx);cursor:pointer}
+.seg{display:flex;gap:4px;background:var(--card);border-radius:12px;padding:3px;margin-bottom:10px;overflow-x:auto}
+.seg button{flex:1;min-width:max-content;border:0;background:none;color:var(--mut);font-size:13px;font-weight:600;padding:8px 10px;border-radius:9px;cursor:pointer}
+.seg button.on{background:var(--acc);color:var(--acc-tx)}
+.chips{display:flex;gap:6px;overflow-x:auto;padding:2px 0 8px}.chip{border:0;border-radius:20px;padding:7px 12px;font-size:13px;font-weight:600;background:var(--card);color:var(--tx);white-space:nowrap;cursor:pointer}
+.chip.on{background:var(--acc);color:var(--acc-tx)}
+select,input{width:100%;border:1px solid var(--line);background:var(--card);color:var(--tx);border-radius:10px;padding:10px;font-size:15px}
+label.f{display:block;font-size:12.5px;color:var(--mut);margin:10px 0 4px}
+.alert{border:1.5px solid var(--red);background:var(--red-bg)}
+.inv{cursor:pointer}.inv .amt{font-size:17px;font-weight:600}
+.det{border-top:1px solid var(--line);margin-top:10px;padding-top:8px}
+.err{border-left:3px solid var(--red);border-radius:0 16px 16px 0}.err.cheap{border-left-color:var(--amb)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}td,th{padding:7px 3px;border-bottom:1px solid var(--line);text-align:right}td:first-child,th:first-child{text-align:left}th{font-size:12px;color:var(--mut);font-weight:600}
+tr:last-child td{border-bottom:0}
+.tabs{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);display:flex;padding:6px 4px calc(6px + env(safe-area-inset-bottom));z-index:5}
+.tab{flex:1;border:0;background:none;color:var(--mut);font-size:11px;font-weight:600;padding:5px 0;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px}
+.tab svg{width:22px;height:22px}.tab.on{color:var(--acc)}
+.pg{display:none}.pg.on{display:block}
+.note{font-size:13px;padding:5px 0;border-bottom:1px solid var(--line)}.note:last-child{border:0}
+.toast{position:fixed;left:50%;bottom:92px;transform:translateX(-50%);background:#222;color:#fff;padding:10px 16px;border-radius:10px;font-size:14px;opacity:0;transition:.25s;pointer-events:none;z-index:9;max-width:90%}
+.toast.on{opacity:.95}
+.prices{display:grid;grid-template-columns:1fr auto;gap:3px 12px;font-size:13.5px;margin-top:8px}
+.empty{text-align:center;padding:30px 10px;color:var(--mut)}
+.skel{height:96px;border-radius:16px;background:var(--card);opacity:.6;margin-bottom:10px}
+.filt{display:flex;align-items:center;justify-content:space-between;background:var(--card);border-radius:12px;padding:8px 12px;margin-bottom:10px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="pg on" id="p-holat"><div class="skel"></div><div class="skel"></div><div class="skel"></div></section>
+  <section class="pg" id="p-faktura"></section>
+  <section class="pg" id="p-xato"></section>
+  <section class="pg" id="p-transh"></section>
+</div>
+
+<nav class="tabs">
+  <button class="tab on" data-p="holat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Holat</button>
+  <button class="tab" data-p="faktura"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h5"/></svg>Faktura</button>
+  <button class="tab" data-p="xato"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 18h.01"/></svg>Xatoliklar</button>
+  <button class="tab" data-p="transh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/></svg>Transhlar</button>
+</nav>
+<div class="toast" id="toast"></div>
+
+<script>
+const tg = window.Telegram ? Telegram.WebApp : null;
+if (tg) { tg.ready(); tg.expand(); try { tg.setHeaderColor('secondary_bg_color'); } catch (e) {} }
+const $ = s => document.querySelector(s);
+
+/* Kirill → lotin (serverdan keladigan matnlar uchun) */
+const CY = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'yo','ж':'j','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'x','ц':'ts','ч':'ch','ш':'sh','щ':'sh','ъ':"'",'ы':'i','ь':'','э':'e','ю':'yu','я':'ya','ў':"o'",'қ':'q','ғ':"g'",'ҳ':'h'};
+function L(s) {
+  if (s == null) return '';
+  return String(s).replace(/[А-Яа-яЁёЎўҚқҒғҲҳ]/g, (ch, i, str) => {
+    const lo = ch.toLowerCase(), up = ch !== lo;
+    let r = CY[lo] ?? ch;
+    if (lo === 'е' && (i === 0 || !/[А-Яа-яЁёЎўҚқҒғҲҳ]/.test(str[i - 1]))) r = 'ye';
+    if (!up) return r;
+    const nextUp = str[i + 1] && str[i + 1] !== str[i + 1].toLowerCase();
+    return nextUp ? r.toUpperCase() : r.charAt(0).toUpperCase() + r.slice(1);
+  });
+}
+const fmt = (x, d = 0) => x == null ? '—' : Number(x).toLocaleString('en-US', {minimumFractionDigits: d, maximumFractionDigits: d});
+const usd = (x, d = 0) => x == null ? '—' : (x < 0 ? '−' : '') + fmt(Math.abs(x), d) + ' $';
+const sgn = (x, d = 2) => x == null ? '—' : (x > 0 ? '+' : x < 0 ? '−' : '') + fmt(Math.abs(x), d);
+const dmy = s => s ? s.slice(8, 10) + '.' + s.slice(5, 7) + '.' + s.slice(0, 4) : '—';
+const dm = s => s ? s.slice(8, 10) + '.' + s.slice(5, 7) : '—';
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+const E = s => esc(L(s));
+const TYPES = ['Бриллиант', 'Вакс', 'Дорика', 'Фианит', 'Браслет', 'Детский', 'Ван Клиф'];
+const isClosed = h => String(h || '').startsWith('Ёпилган');
+const holatL = h => isClosed(h) ? 'Yopilgan' : ({'Фаол': 'Faol', 'Тугаган': 'Tugagan', 'Ишлатилмаган': 'Ishlatilmagan'}[h] || L(h));
+function toast(t) { const e = $('#toast'); e.textContent = t; e.classList.add('on'); setTimeout(() => e.classList.remove('on'), 2400); }
+function haptic(k) { try { tg && tg.HapticFeedback.notificationOccurred(k); } catch (e) {} }
+function farqBadge(f, bad) {
+  if (!bad) return '<span class="bd g">✓ to\'g\'ri</span>';
+  return f > 0 ? `<span class="bd r">⚠ ${sgn(f)} $</span>` : `<span class="bd a">⚠ ${sgn(f)} $</span>`;
+}
+
+async function api(path, body) {
+  const r = await fetch(path, {method: body ? 'POST' : 'GET', headers: {'Content-Type': 'application/json', 'X-Init-Data': tg ? tg.initData : ''}, body: body ? JSON.stringify(body) : undefined});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(L((j.errors && j.errors.join('; ')) || j.error || ('Xato ' + r.status)));
+  return j;
+}
+function fail(el, e) { el.innerHTML = `<div class="card empty">⚠️ ${esc(e.message)}</div>`; }
+
+/* ---------- TABLAR ---------- */
+const loaded = {};
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => show(b.dataset.p));
+function show(p, force) {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.dataset.p === p));
+  document.querySelectorAll('.pg').forEach(x => x.classList.toggle('on', x.id === 'p-' + p));
+  window.scrollTo(0, 0);
+  if (!loaded[p] || force) { loaded[p] = true; ({holat: loadHolat, faktura: loadFaktura, xato: loadXato, transh: loadTransh})[p](); }
+}
+function invalidate() { loaded.holat = loaded.faktura = loaded.xato = false; }
+
+/* ---------- HOLAT ---------- */
+let chart;
+async function loadHolat() {
+  const el = $('#p-holat');
+  try {
+    const d = await api('/api/holat');
+    const a = d.active, o = d.oxirgi;
+    const open = d.transhlar.filter(t => !isClosed(t.holat));
+    el.innerHTML = `
+    <div class="card">
+      <div class="mut">Ta'minotchidagi qoldiq</div>
+      <div class="big">${usd(d.left)}</div>
+      <div class="mut">${a ? `Faol transh №${a.no} · birja ${a.birja} · ≈ ${fmt(d.gramm999)} gr 999` : 'Faol transh yo\'q'}</div>
+      ${open.map(t => `<div class="bar"><i style="width:${Math.max(1, Math.min(100, t.pct))}%"></i></div>
+        <div class="rw mut"><span>№${t.no} · ishlatilgan ${usd(t.used)}</span><span>${fmt(t.pct, 1)}%</span></div>`).join('')}
+    </div>
+    ${o ? `<div class="card ${o.bad ? 'alert' : ''} inv" onclick="openFaktura('${esc(o.key)}', ${o.transh || 0})">
+      <div class="rw"><b style="font-size:14px">${o.bad ? (o.farq > 0 ? '⚠ Oxirgi faktura qimmat' : '⚠ Oxirgi fakturada farq bor') : '✓ Oxirgi faktura to\'g\'ri'}</b>
+        <b class="${o.farq > 0 && o.bad ? 'red' : ''}" style="white-space:nowrap">${o.bad ? sgn(o.farq) + ' $' : ''}</b></div>
+      <div class="mut" style="margin-top:4px">${E(o.faktura)} · ${E(o.filial)} · ${dmy(o.sana)} · ${o.n} pozitsiya · ${usd(o.fakt, 2)}</div>
+    </div>` : ''}
+    <div class="g2">
+      <div class="card"><div class="lb">Jami berilgan</div><div class="v">${usd(d.given)}</div></div>
+      <div class="card"><div class="lb">Olingan tovar</div><div class="v">${usd(d.used)}</div></div>
+      <div class="card"><div class="lb">Fakturalar</div><div class="v">${fmt(d.faktura_soni)}</div></div>
+      <div class="card"><div class="lb">Jami farq</div><div class="v ${d.farq > 0 ? 'red' : ''}">${sgn(d.farq, 0)} $</div></div>
+      <div class="card"><div class="lb">O'rtacha kunlik sarf</div><div class="v">${usd(d.temp)}</div></div>
+      <div class="card"><div class="lb">Taxminiy tugash</div><div class="v">${dmy(d.tugash)}</div></div>
+    </div>
+    <div class="sec">Narx nazorati</div>
+    <div class="card">
+      <div class="g2"><div><div class="lb">Qimmat yozilgan (zarar)</div><div class="v red">${sgn(d.qimmat)} $</div></div>
+        <div><div class="lb">Arzon yozilgan</div><div class="v">${sgn(d.arzon)} $</div></div></div>
+      <div class="rw" style="margin-top:10px"><span class="mut">${fmt(d.n)} pozitsiya · ${d.filiallar} filial · chegara ±${d.chegara} $/gr</span>
+        <button class="btn2" onclick="show('xato')">${d.bad_n} ta farq ›</button></div>
+    </div>
+    <div class="sec">Kunlik olingan tovar</div>
+    <div class="card"><canvas id="ch" height="190"></canvas></div>
+    <div class="sec">Tur bo'yicha</div>
+    <div class="card"><table><tr><th>Tur</th><th>Pozitsiya</th><th>Gramm</th><th>Farqli</th></tr>
+      ${d.turlar.map(t => `<tr><td>${E(t.tur)}</td><td>${fmt(t.n)}</td><td>${fmt(t.gramm, 1)}</td><td class="${t.bad ? 'red' : 'mut'}">${t.bad || '—'}</td></tr>`).join('')}</table></div>
+    <button class="btn" id="rep">Excel hisobotni chatga yuborish</button>
+    <div class="mut" style="text-align:center;margin:10px 0">Faktura: Excel faylni bot chatiga tashlang</div>`;
+    $('#rep').onclick = async e => { const b = e.target; b.disabled = true; b.textContent = 'Yuborilmoqda…';
+      try { await api('/api/hisobot', {}); haptic('success'); toast('Hisobot chatga yuborildi'); } catch (er) { toast(er.message); }
+      b.disabled = false; b.textContent = 'Excel hisobotni chatga yuborish'; };
+    drawChart(d.kunlik);
+  } catch (e) { fail(el, e); }
+}
+function drawChart(k) {
+  if (!window.Chart || !$('#ch')) return;
+  const mut = getComputedStyle(document.documentElement).getPropertyValue('--mut').trim() || '#888';
+  const acc = getComputedStyle(document.documentElement).getPropertyValue('--acc').trim() || '#2f80ed';
+  if (chart) chart.destroy();
+  chart = new Chart($('#ch'), {type: 'bar', data: {labels: k.map(x => dm(x.sana)),
+    datasets: [{label: 'Hisob, $', data: k.map(x => x.hisob), backgroundColor: acc, borderRadius: 4},
+               {label: 'Farq, $', data: k.map(x => x.farq), type: 'line', yAxisID: 'y2', borderColor: '#e5484d', backgroundColor: '#e5484d', pointRadius: 3, tension: .3}]},
+    options: {responsive: true, plugins: {legend: {labels: {color: mut, boxWidth: 10, font: {size: 11}}}},
+      scales: {x: {ticks: {color: mut, font: {size: 10}}, grid: {display: false}},
+               y: {ticks: {color: mut, font: {size: 10}, callback: v => (v / 1000) + 'k'}, grid: {color: 'rgba(127,127,127,.12)'}},
+               y2: {position: 'right', ticks: {color: '#e5484d', font: {size: 10}}, grid: {display: false}}}}});
+}
+
+/* ---------- FAKTURA ---------- */
+let FD = null, FSel = null, FOpen = null;
+async function loadFaktura() {
+  const el = $('#p-faktura');
+  try { FD = await api('/api/fakturalar'); if (FSel == null || !FD.groups.some(g => g.no === FSel)) FSel = FD.groups.length ? FD.groups[0].no : null; renderFaktura(); }
+  catch (e) { fail(el, e); }
+}
+function openFaktura(key, no) { FOpen = key; if (no) FSel = no; show('faktura', !FD); if (FD) renderFaktura(); }
+function renderFaktura() {
+  const el = $('#p-faktura');
+  if (!FD.groups.length) { el.innerHTML = '<div class="card empty">Hali transh yo\'q</div>'; return; }
+  const g = FD.groups.find(x => x.no === FSel) || FD.groups[0];
+  el.innerHTML = `
+    <div class="seg">${FD.groups.map(x => `<button class="${x.no === g.no ? 'on' : ''}" data-no="${x.no}">Transh №${x.no} · ${dm(x.sana)}</button>`).join('')}</div>
+    <div class="card">
+      <div class="mut">Pul berilgandan keyin (${dmy(g.sana)} · ${usd(g.summa)})</div>
+      <div class="g2" style="margin-top:10px">
+        <div><div class="lb">Fakturalar soni</div><div class="v">${fmt(g.count)}</div></div>
+        <div><div class="lb">Jami qiymati</div><div class="v">${usd(g.fakt, 2)}</div></div>
+        <div><div class="lb">Hisob bo'yicha</div><div class="v">${usd(g.hisob, 2)}</div></div>
+        <div><div class="lb">Farq</div><div class="v ${g.farq > 0.5 ? 'red' : ''}">${sgn(g.farq)} $</div></div>
+      </div>
+      <div class="bar"><i style="width:${Math.max(1, Math.min(100, g.pct))}%"></i></div>
+      <div class="rw mut"><span>${fmt(g.pct, 1)}% ishlatildi</span><span>qoldiq ${usd(g.left)}</span></div>
+      <div class="mut" style="margin-top:2px">${fmt(g.gramm, 2)} gr · ${fmt(g.n)} pozitsiya</div>
+      ${isClosed(g.holat) ? `<div class="mut" style="margin-top:6px">Transh yopilgan</div>` : ''}
+    </div>
+    <div class="sec">Fakturalar${g.bad ? ` · ${g.bad} tasida farq` : ''}</div>
+    ${g.items.length ? g.items.map(a => invCard(a)).join('') : '<div class="card empty">Bu transh bo\'yicha faktura yo\'q</div>'}
+    ${FD.other.length ? `<div class="sec">Transhga tushmagan</div>${FD.other.map(a => invCard(a)).join('')}` : ''}`;
+  el.querySelectorAll('.seg button').forEach(b => b.onclick = () => { FSel = +b.dataset.no; FOpen = null; renderFaktura(); });
+  el.querySelectorAll('.inv').forEach(c => c.onclick = e => { if (e.target.closest('.btn2')) return; FOpen = FOpen === c.dataset.k ? null : c.dataset.k; renderFaktura(); });
+  const op = el.querySelector('.inv.open'); if (op) op.scrollIntoView({block: 'center'});
+}
+function invCard(a) {
+  const open = FOpen === a.key;
+  return `<div class="card inv ${open ? 'open' : ''}" data-k="${esc(a.key)}">
+    <div class="rw"><b style="font-size:14px">${E(a.faktura) || '—'}</b><span class="mut">${dmy(a.sana)}</span></div>
+    <div class="mut">${E(a.filial)} · ${a.n} pozitsiya · ${fmt(a.gramm, 2)} gr</div>
+    <div class="rw" style="margin-top:6px"><span class="amt">${usd(a.fakt, 2)}</span>${farqBadge(a.farq, a.bad)}</div>
+    ${open ? `<div class="det">
+      <table><tr><th>Tur</th><th>Gr</th><th>Faktura</th><th>Kerak</th><th>Farq</th></tr>
+      ${a.turlar.map(t => `<tr><td>${E(t.tur)} <span class="mut">×${t.n}</span></td><td>${fmt(t.gramm, 2)}</td><td>${fmt(t.fakt_1gr, 2)}</td><td>${fmt(t.hisob_1gr, 2)}</td>
+        <td class="${t.bad && t.farq > 0 ? 'red' : t.bad ? '' : 'mut'}">${t.bad ? sgn(t.farq) : '—'}</td></tr>`).join('')}</table>
+      <div class="rw" style="margin-top:8px"><span class="mut">Hisob bo'yicha ${usd(a.hisob, 2)}</span>
+        ${a.bad ? `<button class="btn2" onclick="xatoByFaktura('${esc(a.faktura)}')">${a.bad} ta xatolik ›</button>` : ''}</div>
+    </div>` : ''}
+  </div>`;
+}
+function xatoByFaktura(f) { XF = {k: 'all', filial: '', tur: '', q: f}; show('xato', true); }
+
+/* ---------- XATOLIKLAR ---------- */
+let XR = [], XF = {k: 'all', filial: '', tur: '', q: ''};
+async function loadXato() {
+  const el = $('#p-xato');
+  try { const d = await api('/api/xatolar'); XR = d.rows; renderXato(); } catch (e) { fail(el, e); }
+}
+function renderXato() {
+  const el = $('#p-xato');
+  const fil = [...new Set(XR.map(r => r.filial))].sort(), tur = [...new Set(XR.map(r => r.tur))].sort();
+  el.innerHTML = `
+    <div class="chips" id="xk">
+      ${[['all', 'Hammasi'], ['q', 'Qimmat (zarar)'], ['a', 'Arzon'], ['o', 'Boshqa']].map(([k, t]) => `<button class="chip ${XF.k === k ? 'on' : ''}" data-k="${k}">${t}</button>`).join('')}
+    </div>
+    <div class="g2" style="margin-bottom:8px">
+      <select id="xf"><option value="">Barcha filial</option>${fil.map(f => `<option value="${esc(f)}" ${XF.filial === f ? 'selected' : ''}>${E(f)}</option>`).join('')}</select>
+      <select id="xt"><option value="">Barcha tur</option>${tur.map(f => `<option value="${esc(f)}" ${XF.tur === f ? 'selected' : ''}>${E(f)}</option>`).join('')}</select>
+    </div>
+    <input id="xq" placeholder="Tovar kodi yoki faktura №" value="${esc(XF.q)}" style="margin-bottom:10px">
+    <div id="xs" class="mut" style="margin:0 4px 8px"></div>
+    <div id="xl"></div>`;
+  el.querySelectorAll('#xk .chip').forEach(b => b.onclick = () => { XF.k = b.dataset.k; renderXato(); });
+  $('#xf').onchange = e => { XF.filial = e.target.value; listXato(); };
+  $('#xt').onchange = e => { XF.tur = e.target.value; listXato(); };
+  $('#xq').oninput = e => { XF.q = e.target.value; listXato(); };
+  listXato();
+}
+function listXato() {
+  const q = XF.q.trim().toLowerCase();
+  const rs = XR.filter(r => (XF.k === 'all' || (XF.k === 'q' && r.holat.includes('ҚИММАТ')) || (XF.k === 'a' && r.holat.includes('арзон')) ||
+      (XF.k === 'o' && !r.holat.includes('ҚИММАТ') && !r.holat.includes('арзон')))
+    && (!XF.filial || r.filial === XF.filial) && (!XF.tur || r.tur === XF.tur)
+    && (!q || (r.kod + ' ' + r.faktura + ' ' + r.nomi).toLowerCase().includes(q)));
+  const sum = rs.reduce((s, r) => s + (r.farq || 0), 0);
+  $('#xs').textContent = `${rs.length} pozitsiya · farq ${sgn(sum)} $`;
+  $('#xl').innerHTML = rs.length ? rs.slice(0, 300).map(r => {
+    const cheap = r.holat.includes('арзон');
+    return `<div class="card err ${cheap ? 'cheap' : ''}">
+      <div class="rw"><b style="font-size:14px">${E(r.filial)}</b><span class="mut">${dmy(r.sana)}</span></div>
+      <div class="mut">${E(r.kod)} · ${E(r.tur)} · ${fmt(r.gramm, 2)} gr · faktura ${E(r.faktura)}</div>
+      <div class="rw" style="margin-top:8px">
+        <div class="sm">Faktura <b>${fmt(r.fakt_1gr, 2)}</b> · kerak <b>${fmt(r.hisob_1gr, 2)}</b> $/gr</div>
+        <span class="bd ${cheap ? 'a' : 'r'}">${sgn(r.farq)} $</span>
+      </div>
+      ${r.izoh ? `<div class="sm" style="margin-top:6px">${E(r.izoh)}</div>` : ''}
+    </div>`;
+  }).join('') + (rs.length > 300 ? `<div class="mut" style="text-align:center">Birinchi 300 tasi ko'rsatildi</div>` : '')
+    : `<div class="card empty">Farq yo'q 👍</div>`;
+}
+
+/* ---------- TRANSHLAR ---------- */
+async function loadTransh() {
+  const el = $('#p-transh');
+  try {
+    const d = await api('/api/transhlar');
+    const today = new Date().toISOString().slice(0, 10);
+    el.innerHTML = `
+    <button class="btn" id="newbtn">+ Yangi transh (pul berildi)</button>
+    <div id="newform"></div>
+    <div class="sec">Transhlar</div>
+    ${d.transhlar.slice().reverse().map(t => {
+      const closed = !!t.yopilgan_sana, cls = closed ? 'n' : (t.holat === 'Фаол' ? 'g' : t.holat === 'Тугаган' ? 'n' : 'a');
+      const pct = t.summa ? Math.min(100, (t.used || 0) / t.summa * 100) : 0;
+      return `<div class="card">
+        <div class="rw"><b>Transh №${t.no} · ${dmy(t.sana)}</b><span class="bd ${cls}">${closed ? 'Yopilgan ' + dm(t.yopilgan_sana) : holatL(t.holat)}</span></div>
+        <div class="mut">${usd(t.summa)} · birja ${t.birja} · lom ${fmt(t.lom, 2)}</div>
+        <div class="bar"><i style="width:${Math.max(1, pct)}%"></i></div>
+        <div class="rw mut"><span>ishlatilgan ${usd(t.used)}</span><span>qoldiq ${usd(t.left)}</span></div>
+        <div class="prices">${Object.entries(t.narxlar).filter(([k]) => k !== 'Кузсиз').map(([k, v]) => `<span>${k === 'Вакс' ? 'Vaks / ko\'zsiz' : E(k)}</span><b>${fmt(v, 2)}</b>`).join('')}</div>
+        <div class="rw" style="margin-top:12px;justify-content:flex-start;gap:6px">
+          ${closed ? `<button class="btn2" onclick="yop(${t.no}, null)">Qayta ochish</button>`
+                   : `<input type="date" id="yd${t.no}" value="${today}" style="flex:1;padding:7px"><button class="btn2" onclick="yop(${t.no}, $('#yd${t.no}').value)">Yopish</button>`}
+        </div>
+      </div>`; }).join('')}
+    <div class="sec">Sozlama</div>
+    <div class="card"><div class="rw"><div style="flex:1"><div class="sm">Ruxsat etilgan farq, $/gr</div><div class="mut">Undan katta farq — xatolik</div></div>
+      <input id="cheg" type="number" step="0.05" value="${d.chegara}" style="width:90px"><button class="btn2" id="chegb">Saqlash</button></div></div>`;
+    $('#newbtn').onclick = () => newForm(d.transhlar[d.transhlar.length - 1]);
+    $('#chegb').onclick = async () => { try { await api('/api/chegara', {v: $('#cheg').value}); haptic('success'); toast('Saqlandi'); invalidate(); } catch (e) { toast(e.message); } };
+  } catch (e) { fail(el, e); }
+}
+async function yop(no, sana) {
+  const msg = sana ? `Transh №${no} ni ${dmy(sana)} dan yopaymi? Shu sanadan keyingi tovarlar unga yozilmaydi.` : `Transh №${no} ni qayta ochaymi?`;
+  const go = await new Promise(res => tg && tg.showConfirm && tg.initData ? tg.showConfirm(msg, res) : res(confirm(msg)));
+  if (!go) return;
+  try { await api('/api/transh/yop', {no, sana}); haptic('success'); toast(sana ? 'Yopildi' : 'Ochildi'); invalidate(); loadTransh(); }
+  catch (e) { toast(e.message); }
+}
+function newForm(prev) {
+  const f = $('#newform');
+  if (f.innerHTML) { f.innerHTML = ''; return; }
+  f.innerHTML = `<div class="card" style="margin-top:10px">
+    <div class="g2"><div><label class="f">Sana</label><input type="date" id="ns" value="${new Date().toISOString().slice(0, 10)}"></div>
+      <div><label class="f">Summa, $</label><input id="nsum" inputmode="decimal" placeholder="707000"></div></div>
+    <label class="f">Birja narxi 999, $/gr</label><input id="nb" inputmode="decimal" placeholder="134.81">
+    <div class="mut" id="nlom" style="margin-top:4px"></div>
+    <label class="f" style="margin-top:14px">1 gr narxlari (lom + ishchilik + QQS), $</label>
+    <div class="g2">${TYPES.map(t => `<div><label class="f" style="margin-top:2px">${t === 'Вакс' ? "Vaks / ko'zsiz" : L(t)}</label><input class="np" data-t="${t}" inputmode="decimal" placeholder="${prev && prev.narxlar[t] ? fmt(prev.narxlar[t], 2) : ''}"></div>`).join('')}</div>
+    <div id="nnotes" style="margin-top:12px"></div>
+    <div class="rw" style="margin-top:12px;gap:8px"><button class="btn2" id="nchk" style="flex:1;padding:12px">Tekshirish</button><button class="btn" id="nsave" style="flex:1" disabled>Saqlash</button></div>
+  </div>`;
+  const body = () => ({sana: $('#ns').value, summa: $('#nsum').value, birja: $('#nb').value,
+    narxlar: Object.fromEntries([...document.querySelectorAll('.np')].map(i => [i.dataset.t, i.value]))});
+  $('#nb').oninput = e => { const b = parseFloat(e.target.value.replace(',', '.')); $('#nlom').textContent = b ? `Lom = ${fmt(b * 585 / 999, 2)} $/gr` : ''; };
+  f.querySelectorAll('input').forEach(i => i.addEventListener('input', () => $('#nsave').disabled = true));
+  $('#nchk').onclick = async () => {
+    try { const r = await api('/api/transh/tekshir', body());
+      $('#nnotes').innerHTML = r.errors.length ? r.errors.map(x => `<div class="note red">✕ ${E(x)}</div>`).join('')
+        : r.notes.map(x => `<div class="note ${x.includes('⚠') ? 'red' : ''}">${E(x)}</div>`).join('');
+      $('#nsave').disabled = !!r.errors.length; haptic(r.errors.length ? 'error' : 'success');
+    } catch (e) { toast(e.message); }
+  };
+  $('#nsave').onclick = async () => {
+    try { const r = await api('/api/transh', body()); haptic('success'); toast(`Transh №${r.no} saqlandi`); invalidate(); loadTransh(); }
+    catch (e) { toast(e.message); }
+  };
+}
+
+show('holat');
+</script>
+</body>
+</html>
