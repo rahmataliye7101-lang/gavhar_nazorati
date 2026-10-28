@@ -247,8 +247,19 @@ async function loadHolat() {
         ? `<button class="btn2" onclick="vqYop(${q.no}, false)">Qayta ochish</button>`
         : `<button class="btn2" onclick="vqYop(${q.no}, true)">Vozvratni yakunlash</button> <span class="mut" style="font-size:12px">tugasa bosing</span>`}</div>` : ''}
     </div>`).join('')}` : ''}
-    ${d.oy_pul && d.oy_pul.pullar.length ? `<div class="sec">Oy yakuni · ${E(d.oy_pul.nomi)} · pullar</div>
+    ${d.oy_pul && d.oy_pul.pullar.length ? `<div class="sec">Oy yakuni · ${E(d.oy_pul.nomi)}</div>
     <div class="card">
+      <div class="lb">Shu oyda Gavhar bergan tovar</div>
+      <div class="big" style="font-size:26px">${usd(d.oy_pul.tovar.summa, 2)}</div>
+      <div class="mut">${fmt(d.oy_pul.tovar.faktura)} ta faktura · ${fmt(d.oy_pul.tovar.dokon)} ta do'kon · ${fmt(d.oy_pul.tovar.n)} ta tovar · ${fmt(d.oy_pul.tovar.gramm, 2)} gr</div>
+      <div class="g2" style="margin-top:10px">
+        <div><div class="lb">Puldan (transhlardan)</div><div class="v">${usd(d.oy_pul.tovar.puldan)}</div></div>
+        <div><div class="lb">Vozvrat tovar</div><div class="v grn">${usd(d.oy_pul.tovar.vozvrat)}</div></div>
+      </div>
+      ${d.oy_pul.tovar.xato_n ? `<div class="red" style="font-size:13px;margin-top:6px">❌ ${d.oy_pul.tovar.xato_n} ta tovar narxi xato${d.oy_pul.tovar.ortiqcha ? ` · ortiqcha ${usd(d.oy_pul.tovar.ortiqcha, 2)}` : ''}</div>` : ''}
+    </div>
+    <div class="card">
+      <div class="lb" style="margin-bottom:6px">Pullar — oy bo'yicha</div>
       <table><tr><th>Pul</th><th>Oy boshida</th><th>Ishlatildi</th><th>Oy oxirida</th></tr>
       ${d.oy_pul.pullar.map(p => `<tr><td><b>№${p.no}</b> <span class="mut">${dm(p.sana)}</span></td>
         <td>${p.yangi ? '<span class="mut">berildi</span> ' : ''}${fmt(p.boshida)}</td><td>${fmt(p.ishlatildi)}</td>

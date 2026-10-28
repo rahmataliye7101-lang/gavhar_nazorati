@@ -293,7 +293,8 @@ def oy_pul_json(rows, cfg, oy):
     if not oy:
         return None
     pl, yt = N.oy_pullar(rows, cfg, oy)
-    return dict(oy=oy, nomi=f"{OY_NOMI[int(oy[5:7])]} {oy[:4]}", yetmadi=dict(n=yt["n"], summa=r2(yt["summa"])),
+    tv = {k: (r2(v) if isinstance(v, float) else v) for k, v in N.oy_tovar(rows, oy).items()}
+    return dict(oy=oy, nomi=f"{OY_NOMI[int(oy[5:7])]} {oy[:4]}", yetmadi=dict(n=yt["n"], summa=r2(yt["summa"])), tovar=tv,
                 pullar=[{k: (r2(v) if isinstance(v, float) else v) for k, v in p.items()} for p in pl])
 
 
@@ -351,7 +352,7 @@ async def api_yuklash(request):
             if not allrows:
                 return web.json_response({"errors": ["Файлларда фактура топилмади"]}, status=400)
             if tur_ == "auto":
-                tur_ = "oylik" if N.eski_faktura(B.load_cfg(), allrows) else "faktura"
+                tur_ = "oylik" if (N.eski_faktura(B.load_cfg(), allrows) or N.otgan_oy(allrows)) else "faktura"
         has = lambda p: DEV or B.has_perm(uid, p)
         if tur_ == "auto":
             if await asyncio.to_thread(B.looks_like_returns, str(path), fname):
@@ -363,7 +364,7 @@ async def api_yuklash(request):
                 invs = {(r.get("faktura"), r.get("filial")) for r in rows}
                 ds = sorted({r.get("sana") for r in rows if r.get("sana")})
                 span = (dt.date.fromisoformat(ds[-1]) - dt.date.fromisoformat(ds[0])).days if ds else 0
-                tur_ = "oylik" if (len(invs) > 5 or span > 3 or N.eski_faktura(B.load_cfg(), rows)) else "faktura"
+                tur_ = "oylik" if (len(invs) > 5 or span > 3 or N.eski_faktura(B.load_cfg(), rows) or N.otgan_oy(rows)) else "faktura"
         if tur_ == "vozvrat":
             if not has("vozvrat_yuklash"):
                 return web.json_response({"errors": ["Рухсат йўқ: возврат юклаш"]}, status=403)
@@ -950,6 +951,7 @@ def make_bot():
     app.add_handler(CallbackQueryHandler(B.tozalash_cb, pattern="^rs_"))
     app.add_handler(CallbackQueryHandler(B.transh_cb, pattern="^tr_"))
     app.add_handler(CallbackQueryHandler(B.returns_cb, pattern="^rv_"))
+    app.add_handler(CallbackQueryHandler(B.qoshish_cb, pattern="^pq_"))
     app.add_handler(MessageHandler(filters.Document.ALL, B.document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, B.on_text))
     app.add_error_handler(B.on_error)

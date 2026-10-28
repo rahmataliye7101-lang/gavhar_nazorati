@@ -850,9 +850,32 @@ def oy_pullar(rows, cfg, oy):
     return out, dict(n=len(yetmadi), summa=sum(r["summa"] or 0 for r in yetmadi))
 
 
+def oy_tovar(rows, oy):
+    """Шу ойда Gavhar берган товар: фактуралар, SKU, грамм, сумма — пулдан / возвратдан / пул етмаган."""
+    rs = [r for r in rows if (r.get("sana") or "")[:7] == oy]
+    sm = lambda xs: sum(r.get("summa") or 0 for r in xs)
+    rv = [r for r in rs if r.get("transh") == "возврат"]
+    yt = [r for r in rs if r.get("pul_yetmadi") and r.get("transh") != "возврат"]
+    return dict(faktura=len({(r.get("faktura"), r.get("filial"), r.get("sana")) for r in rs}), dokon=len({r.get("filial") for r in rs}),
+                n=len(rs), gramm=sum(r.get("gramm") or 0 for r in rs), summa=sm(rs),
+                puldan=sum(sum((r.get("sarf") or {}).values()) for r in rs), vozvrat=sm(rv), yetmadi=sm(yt),
+                xato_n=sum(1 for r in rs if str(r.get("holat", "")).startswith("⚠")),
+                ortiqcha=sum(r.get("farq") or 0 for r in rs if str(r.get("holat", "")).startswith("⚠") and (r.get("farq") or 0) > 0))
+
+
 def oy_pullar_matn(rows, cfg, oy):
     pl, yt = oy_pullar(rows, cfg, oy)
-    L = [f"📅 {OYLAR[int(oy[5:7])].upper()} {oy[:4]} — ой якуни (пуллар)", ""]
+    tv = oy_tovar(rows, oy)
+    L = [f"📅 {OYLAR[int(oy[5:7])].upper()} {oy[:4]} — ой якуни", "",
+         f"📦 Шу ойда Gavhar берган товар: {tv['summa']:,.2f} $",
+         f"   {tv['faktura']} та фактура · {tv['dokon']} та дўкон · {tv['n']} та товар · {tv['gramm']:,.2f} гр",
+         f"   💳 пулдан (траншлардан): {tv['puldan']:,.2f} $",
+         f"   ↩️ возврат товар: {tv['vozvrat']:,.2f} $"]
+    if tv["yetmadi"] > 0.5:
+        L.append(f"   ⚠ пул етмаган: {tv['yetmadi']:,.2f} $")
+    if tv["xato_n"]:
+        L.append(f"   ❌ нархи хато: {tv['xato_n']} та товар" + (f", ортиқча ёзилган {tv['ortiqcha']:,.2f} $" if tv["ortiqcha"] else ""))
+    L += ["", "💳 Пуллар:"]
     if not pl:
         return "\n".join(L + ["Бу ой учун пул йўқ."])
     for p in pl:
@@ -868,6 +891,31 @@ def oy_pullar_matn(rows, cfg, oy):
     if yt["n"]:
         L.append(f"⚠ {yt['n']} та товар ({yt['summa']:,.0f} $) учун пул етмади — пул киритилмаганми ёки суммаси камми, текширинг.")
     return "\n".join(L)
+
+
+def pul_ogoh(rows, cfg):
+    """Пул етмаган товарлар бўлса ва ботда ишлатилмаётган (ёпилган / ўчирилган / «фақат текширув») пул бор бўлса — огоҳлантириш."""
+    yt = [r for r in rows if r.get("pul_yetmadi")]
+    if not yt:
+        return []
+    oxir = max((r.get("sana") or "") for r in yt)
+    chetda = []
+    for t in sorted(cfg.get("transhlar", []), key=lambda t: t["sana"]):
+        if t["sana"] > oxir:
+            continue
+        sab = ("«📅 фақат эски приход текшируви учун» турибди" if t.get("faqat_tekshiruv") else
+               "текширувдан ўчирилган (⏸)" if not t.get("faol", True) else
+               f"ёпилган ({_dmy(t['yopilgan_sana'])})" if t.get("yopilgan_sana") else "")
+        if sab:
+            chetda.append(f"Транш №{t['no']} ({_dmy(t['sana'])}, {t['summa_usd']:,.0f} $) — {sab}")
+    L = [f"⚠️ {len(yt)} та товар ({sum(r['summa'] or 0 for r in yt):,.0f} $) учун пул етмади — улар пулдан айирилмади."]
+    if chetda:
+        L += ["   Ботда ишлатилмаётган пул бор:"] + [f"   • {x}" for x in chetda]
+        L.append("   Агар у шу товарлар учун бўлса: Admin → Tekshiruv sozlamasi да «kundalik navbatga qo'shish» / белгини ёқинг "
+                 "ёки Transhlar да «Qayta ochish» ни босинг — ҳаммаси ўзи қайта ҳисобланади.")
+    else:
+        L.append("   Ўша санага пул киритилмаган ёки суммаси кам — пулларни текширинг.")
+    return L
 
 
 def belgila(rows, cfg):
@@ -1451,10 +1499,14 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
         for q in qism_stats(cfg):
             if not q["yopilgan"]:
                 L.append(f"↩️ Возврат {q['no']}-қисм: қолди {q['qolgan']:,.0f} $ ({q['summa']:,.0f} $ дан)")
+        og = pul_ogoh(new_res, cfg)
+        if og:
+            L += [""] + og
         L.append("Батафсил: Excel файл ёки «Назорат» mini app.")
         return "\n".join(L)
     s["qismlar"] = qism_stats(cfg)
     s["off"] = [f"Транш №{t['no']} ({_dmy(t['sana'])})" for t in cfg["transhlar"] if not t.get("faol", True)]
+    s["pul_ogoh"] = pul_ogoh(rows, cfg)
     s["eski"] = [f"Транш №{t['no']} ({_dmy(t['sana'])})" for t in cfg["transhlar"] if t.get("faol", True) and t.get("faqat_tekshiruv")]
     if returns:
         s["v1"] = dict(returns_stats(returns), yopilgan=(cfg.get("vozvrat_1") or {}).get("yopilgan_sana"))
@@ -1485,8 +1537,12 @@ def holat_matn(rows, trs, s):
             L.append(f"💳 Ҳозир ишлаяпти: {nom} — қолдиқ {t['left']:,.0f} $")
         elif t["holat"] == "Ишлатилмаган":
             L.append(f"   Навбатда: {nom} — {t['summa']:,.0f} $")
+        elif t["holat"] == "Фаол":
+            L.append(f"   {nom} — қисман ишлатилган, қолдиқ {t['left']:,.0f} $")
+        elif t["holat"] == "Тугаган":
+            L.append(f"   {nom} — тугаган")
         else:
-            L.append(f"   {nom} — {'тугаган' if t['holat'] == 'Тугаган' else 'ёпилган'}")
+            L.append(f"   {nom} — {str(t['holat']).lower()}")
     inv = {(r["faktura"], r["filial"], r["sana"]) for r in rows}
     if not inv:
         L += ["", "🧾 Ҳали фактура юкланмаган."]
@@ -1517,7 +1573,16 @@ def holat_matn(rows, trs, s):
                  + (f" — якунланган ({_dmy(q['yopilgan'])})" if q["yopilgan"] else f", қолди {q['qolgan']:,.0f} $"))
     if s.get("tugash"):
         L.append(f"⏳ Пул тахминан {s['tugash']:%d.%m.%Y} гача етади")
+    if s.get("pul_ogoh"):
+        L += [""] + s["pul_ogoh"]
     return L
+
+
+def otgan_oy(rows, bugun=None):
+    """Фактура(лар) ўтган ой(лар)га тегишли бўлса — ойини қайтаради (жорий ой ҳисобига қўшилмайди)."""
+    joriy = (bugun or dt.date.today()).strftime("%Y-%m")
+    oylar = {(r.get("sana") or "")[:7] for r in rows if r.get("sana")}
+    return max(oylar) if oylar and max(oylar) < joriy else None
 
 
 def eski_faktura(cfg, rows):

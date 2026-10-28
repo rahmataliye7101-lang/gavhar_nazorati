@@ -947,8 +947,9 @@ async def oylik(update: Update, ctx):
         "Реестрга қўшилмайди, пул айирилмайди.")
 
 
-async def handle_oylik_file(update: Update, path):
+async def handle_oylik_file(update: Update, path, qoshish_tugma=False):
     msg = update.effective_message
+    paths = [str(x) for x in path] if isinstance(path, (list, tuple)) else [str(path)]
     await msg.chat.send_action(ChatAction.TYPING)
     async with LOCK:
         cfg = load_cfg()
@@ -957,11 +958,28 @@ async def handle_oylik_file(update: Update, path):
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / f"Oylik_tekshiruv_{dt.date.today():%Y-%m-%d}.xlsx"
         try:
-            mr, text = await asyncio.to_thread(nazorat.oylik_tekshir, cfg, ledger, rets, [str(path)], str(out))
+            mr, text = await asyncio.to_thread(nazorat.oylik_tekshir, cfg, ledger, rets, paths, str(out))
         except Exception:
             log.exception("oylik")
             return await msg.reply_text("❌ Файлни ўқиб бўлмади. Excel (.xlsx) приход эканини текширинг.")
-        await send_long(msg, text)
+        if qoshish_tugma and mr:
+            chat = update.effective_chat.id
+            kdir = tempfile.mkdtemp()
+            kf = []
+            for i, pth in enumerate(paths):
+                d = Path(kdir) / f"{i:03d}_{Path(pth).name}"
+                shutil.copy(pth, d)
+                kf.append(str(d))
+            old = QOSHISH.pop(chat, None)
+            if old:
+                shutil.rmtree(old["dir"], ignore_errors=True)
+            QOSHISH[chat] = {"dir": kdir, "files": kf}
+            for i in range(0, len(text), 3900):
+                last = i + 3900 >= len(text)
+                await msg.reply_text(text[i:i + 3900], reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("💳 Барибир пулга қўшиш (реестрга)", callback_data="pq_add")]]) if last else None)
+        else:
+            await send_long(msg, text)
         if mr and out.exists() and has_perm(update.effective_user.id, "hisobot"):
             with open(out, "rb") as f:
                 await msg.reply_document(f, filename=out.name, caption="📑 Ойлик текширув")
@@ -971,6 +989,33 @@ async def handle_oylik_file(update: Update, path):
                 await asyncio.to_thread(nazorat.write_errors_report, str(ep), mr, "Ойлик приход — хатоликлар", rets)
                 with open(ep, "rb") as f:
                     await msg.reply_document(f, filename=ep.name, caption="❌ Ойлик хатоликлар (Gavhar га эътироз учун)")
+
+
+QOSHISH = {}  # chat -> ўтган ой фактураси файллари (керак бўлса «пулга қўшиш» учун)
+
+
+async def qoshish_cb(update: Update, ctx):
+    q = update.callback_query
+    if not allowed(update) or not has_perm(update.effective_user.id, "faktura_yuklash"):
+        return await q.answer("Рухсат йўқ", show_alert=True)
+    await q.answer()
+    b = QOSHISH.pop(update.effective_chat.id, None)
+    if not b:
+        return await q.edit_message_reply_markup(reply_markup=None)
+    await q.edit_message_reply_markup(reply_markup=None)
+    try:
+        async with LOCK:
+            BACKUP.mkdir(parents=True, exist_ok=True)
+            bk = BACKUP / f"ledger_{dt.datetime.now():%Y%m%d_%H%M%S}.csv"
+            shutil.copy(LEDGER, bk)
+        await update.effective_message.reply_text("💳 Ўтган ой фактураси реестрга қўшиляпти ва пулдан айириляпти…")
+        await run_and_reply(update, files=b["files"])
+        if filecmp.cmp(bk, LEDGER, shallow=False):
+            bk.unlink()
+        else:
+            (DATA / "last_backup.txt").write_text(str(bk))
+    finally:
+        shutil.rmtree(b["dir"], ignore_errors=True)
 
 
 @need("transh_qoshish")
@@ -1149,7 +1194,7 @@ async def document(update: Update, ctx):
         if not has_perm(uid, "faktura_yuklash"):
             return await update.message.reply_text(f"⛔ Сизда рухсат йўқ: {PERMS['faktura_yuklash']}.")
         # юкламадан олдинги реестр нусхаси — /bekor учун
-        stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")  # микросекунд — бир сонияда бир нечта файл келса ҳам алоҳида
         BACKUP.mkdir(parents=True, exist_ok=True)
         bk = BACKUP / f"ledger_{stamp}.csv"
         shutil.copy(LEDGER, bk)
@@ -1162,6 +1207,10 @@ async def document(update: Update, ctx):
             invs = {(r.get("faktura"), r.get("filial")) for r in rows}
             ds = sorted({r.get("sana") for r in rows if r.get("sana")})
             span = (dt.date.fromisoformat(ds[-1]) - dt.date.fromisoformat(ds[0])).days if ds else 0
+            oy_ = nazorat.otgan_oy(rows)
+            if oy_ and not (len(invs) > 5 or span > 3):  # ўтган ой фактураси — ўша ойга мос текширамиз, жорий ой ҳисобига қўшмаймиз
+                bk.unlink(missing_ok=True)
+                return _navbatga(update, path, name, None, "tek")
             eski = nazorat.eski_faktura(load_cfg(), rows)
             if eski:  # кундалик пуллардан олдинги сана — эски фактура: фақат текширамиз
                 bk.unlink(missing_ok=True)
@@ -1180,38 +1229,55 @@ async def document(update: Update, ctx):
                 "❌ Бу файлда фактура топилмади.\n"
                 "Возврат рўйхати бўлса — аввал /vozvrat ёзинг, кейин файлни ташланг.")
         # бир нечта фактура кетма-кет ташланса — 4 сония кутиб, ҲАММАСИНИ БИРГА текширамиз (битта жавоб)
-        chat = update.effective_chat.id
-        b = BATCH.get(chat)
-        if b is None:
-            b = BATCH[chat] = {"dir": tempfile.mkdtemp(), "files": [], "bk": bk, "task": None}
-        else:
-            bk.unlink(missing_ok=True)  # реестр ҳали ўзгармаган — биринчи нусха етарли
-        dst = Path(b["dir"]) / f"{len(b['files']):03d}_{name}"
-        shutil.copy(path, dst)
-        b["files"].append(str(dst))
-        b["update"] = update
-        if b["task"]:
-            b["task"].cancel()
-        b["task"] = asyncio.create_task(_batch_run(chat))
+        _navbatga(update, path, name, bk, "add")
 
 
 BATCH = {}
 
 
-async def _batch_run(chat):
+def _navbatga(update, path, name, bk, mode):
+    """Файлни навбатга қўяди: mode="add" — жорий ой (реестрга, пулдан айирилади), "tek" — ўтган ой (фақат текширув)."""
+    key = (update.effective_chat.id, mode)
+    b = BATCH.get(key)
+    if b is None:
+        b = BATCH[key] = {"dir": tempfile.mkdtemp(), "files": [], "bk": bk, "task": None}
+    elif bk:
+        bk.unlink(missing_ok=True)  # реестр ҳали ўзгармаган — биринчи нусха етарли
+    dst = Path(b["dir"]) / f"{len(b['files']):03d}_{name}"
+    shutil.copy(path, dst)
+    b["files"].append(str(dst))
+    b["update"] = update
+    if b["task"]:
+        b["task"].cancel()
+    b["task"] = asyncio.create_task(_batch_run(key))
+
+
+async def _batch_run(key):
     try:
         await asyncio.sleep(4)
     except asyncio.CancelledError:
         return
-    b = BATCH.pop(chat, None)
+    b = BATCH.pop(key, None)
     if not b:
         return
     update, files, bk = b["update"], b["files"], b["bk"]
+    mode = key[1] if isinstance(key, tuple) else "add"
     try:
+        if mode == "tek":
+            rows = []
+            for f in files:
+                rows += nazorat.read_invoice(f, [])
+            oy_ = nazorat.otgan_oy(rows) or ""
+            await update.effective_message.reply_text(
+                f"📅 {len(files)} та файл — ЎТГАН ОЙ фактураси ({nazorat.OYLAR[int(oy_[5:7])] if oy_ else ''} {oy_[:4]}).\n"
+                "Жорий ой ҳисобига (реестрга) ҚЎШМАЙМАН — ўша ой пуллари ва возвратлари бўйича текшираман.")
+            return await handle_oylik_file(update, files, qoshish_tugma=True)
         if len(files) > 1:
             await update.effective_message.reply_text(f"📥 {len(files)} та файл қабул қилинди — ҳаммасини бирга текширяпман…")
         await run_and_reply(update, files=files, caption="Ҳисобот")
-        if filecmp.cmp(bk, LEDGER, shallow=False):
+        if not bk or not Path(bk).exists():
+            pass
+        elif filecmp.cmp(bk, LEDGER, shallow=False):
             bk.unlink()  # ҳеч нарса қўшилмади — бекор қилиш нуқтаси ўзгармайди
         else:
             (DATA / "last_backup.txt").write_text(str(bk))
