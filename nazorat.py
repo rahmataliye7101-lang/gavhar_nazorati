@@ -548,10 +548,15 @@ def compute(cfg, ledger, returns=None):
                     first_date[ti] = first_date[ti] or r["sana"]
                     last_date[ti] = r["sana"]
             if rem_g > 1e-9:  # пул етмади — фактура санасигача берилган охирги пул нархида
-                t = next((x for x in reversed(tr) if not r["sana"] or x["sana"] <= r["sana"]), tr[-1])
+                t = next((x for x in reversed(tr) if not r["sana"] or x["sana"] <= r["sana"]), None)
+                sabab_ = "tugagan" if t else "berilmagan"
+                t = t or tr[0]  # фактура санасида ҳали пул бўлмаса — энг биринчи пул нархи
                 p = t["narxlar"].get(r["tur"]) or t["narxlar"].get("Дорика")
                 cost += rem_g * p
                 parts.append(("пул етмади", rem_g, p))
+                r["pul_yetmadi"] = dict(no=t["no"], sana=t["sana"], sabab=sabab_, p=p)
+            elif commit:
+                r.pop("pul_yetmadi", None)
             return cost, parts
 
         cost, parts = alloc(False)
@@ -619,11 +624,13 @@ def compute(cfg, ledger, returns=None):
         if s is not None and parts and parts[0][0] != "пул етмади" and not sakrash:
             i0 = next((k for k, t in enumerate(tr) if t["no"] == parts[0][0]), 0)
             for tj in range(i0 + 1, len(tr)):
-                if left[tj] > 1 and not tr[tj].get("yopilgan_sana"):
+                if left[tj] > 1 and not tr[tj].get("yopilgan_sana") and not (r["sana"] and tr[tj]["sana"] > r["sana"]):
                     pj = tr[tj]["narxlar"].get(r["tur"]) or tr[tj]["narxlar"].get("Дорика")
                     keyingi.append(f"{tr[tj]['no']}-пул нархига ({pj:.2f})")
         cost, parts = alloc(True, start=sakrash)
-        r["transh"] = " + ".join(f"№{n}: {gg:.2f} гр × {p:.2f}" for n, gg, p in parts) if len(parts) > 1 else f"№{parts[0][0]}"
+        fb = r.get("pul_yetmadi")
+        _nom = lambda n: f"№{fb['no']}" if n == "пул етмади" and fb else f"№{n}"
+        r["transh"] = " + ".join(f"{_nom(n)}: {gg:.2f} гр × {p:.2f}" for n, gg, p in parts) if len(parts) > 1 else _nom(parts[0][0])
         r["hisob"] = cost
         r["hisob_1gr"] = cost / g
         if s is None:
@@ -634,7 +641,7 @@ def compute(cfg, ledger, returns=None):
             r["farq"] = s - cost
             if abs(r["farq_gr"]) <= chegara:
                 r["holat"] = "✓ тўғри"
-                r["izoh"] = togri_izoh(parts, tr)
+                r["izoh"] = togri_izoh(parts, tr, fb, r.get("sana"))
                 if r.get("_sakrash_dan") is not None:
                     r["sakrash"] = True
                     r["izoh"] = f"{r.pop('_sakrash_dan')}-пул нархига мос келмади, возвратда ҳам йўқ → " + r["izoh"]
@@ -647,6 +654,8 @@ def compute(cfg, ledger, returns=None):
                 if len(pp) > 1:
                     r["izoh"] = (f"{pp[0][0]}-пул шу товарда тугаб, {pp[-1][0]}-пулга ўтди — тўғри нарх аралаш: "
                                  + " + ".join(f"{gg:.2f} гр × {p_:.2f}" for _, gg, p_ in pp) + f" = {cost / g:.2f} $/гр.")
+                if fb:
+                    r["izoh"] += " " + pul_yetmadi_matn(fb, r.get("sana"))
                 if r.get("_pool_hint"):
                     r["izoh"] = r.pop("_pool_hint")
                 if r.get("_ret_hint"):
@@ -668,12 +677,22 @@ def compute(cfg, ledger, returns=None):
     return belgila(out, cfg), trs
 
 
-def togri_izoh(parts, tr):
+def pul_yetmadi_matn(fb, sana):
+    if not fb:
+        return ""
+    if fb["sabab"] == "berilmagan":
+        return (f"Фактура санасида ({_dmy(sana)}) ҳали пул берилмаган эди — энг яқин {fb['no']}-пул ({_dmy(fb['sana'])}) "
+                f"нархи ({fb['p']:.2f} $/гр) билан текширилди. Бу эски фактура бўлиши мумкин — «Фақат текшириш» да ташланг.")
+    return (f"Шу санагача берилган пуллар тугаган — {fb['no']}-пул ({_dmy(fb['sana'])}) нархи ({fb['p']:.2f} $/гр) билан текширилди. "
+            "Янги пул киритилмаган бўлса — киритинг.")
+
+
+def togri_izoh(parts, tr, fb=None, sana=None):
     """Тўғри қатор учун изоҳ: қайси пул (транш) нархида тўғри."""
     dm = {t["no"]: _dmy(t["sana"]) for t in tr}
     pp = [x for x in parts if x[0] != "пул етмади"]
     if not pp:
-        return "Пул етмади — охирги транш нархида ҳисобланди."
+        return "Тўғри. " + pul_yetmadi_matn(fb, sana) if fb else "Пул етмади — охирги транш нархида ҳисобланди."
     if len(pp) == 1:
         n, _, p = pp[0]
         return f"{n}-пул ({dm.get(n, '')}) нархида тўғри: {p:.2f} $/гр."
@@ -805,7 +824,11 @@ def belgila(rows, cfg):
                 r["asos"] = "Возврат рўйхати (1-қисм)" if q == 1 else f"Возврат {q}-қисм (сумма бўйича)"
             else:
                 ns = list(dict.fromkeys(int(x) for x in re.findall(r"№(\d+)", tr_)))
-                if len(ns) > 1:
+                fb = r.get("pul_yetmadi")
+                if fb and len(ns) <= 1:
+                    r["asos"] = (f"{fb['no']}-пул нархи ({dm.get(fb['no'], '')}) — " +
+                                 ("фактура санасида ҳали пул берилмаган" if fb["sabab"] == "berilmagan" else "шу санагача пуллар тугаган"))
+                elif len(ns) > 1:
                     r["asos"] = f"{ns[0]}+{ns[-1]}-пул (пул алмашган, аралаш нарх)"
                 elif ns:
                     r["asos"] = f"{ns[0]}-пул нархи ({dm.get(ns[0], '')})" + (" — олдинги пул ва возвратга мос келмаган" if r.get("sakrash") else "")
@@ -842,6 +865,8 @@ def sabab(r, tr, parts):
     """Хатонинг содда ва тушунарли сабаби (бир жумла)."""
     f, kerak = r["fakt_1gr"], r["hisob_1gr"]
     tno = parts[0][0]
+    if tno == "пул етмади" and r.get("pul_yetmadi"):
+        tno = r["pul_yetmadi"]["no"]
     t = next((x for x in tr if x["no"] == tno), tr[-1])
     for name, p in t["narxlar"].items():  # бошқа тур нархи билан ёзилганми
         if name != r["tur"] and name != "Кузсиз" and abs(f - p) <= 0.05:
@@ -1184,7 +1209,6 @@ def write_invoice_report(path, fno, fil, sana_t, rs, trn, tmap=None):
         ws.cell(start + i, 13).fill = red if r["holat"].startswith("⚠") else green
         ws.cell(start + i, 14).fill = red if r["holat"].startswith("⚠") else green
     ws.auto_filter.ref = f"A{start}:P{start + len(rs)}"
-    ws.freeze_panes = ws.cell(start + 1, 4)
     for j, w in enumerate([5, 12, 45, 14, 11, 8, 11, 11, 10, 11, 11, 10, 11, 36, 70, 55], 1):
         ws.column_dimensions[get_column_letter(j)].width = w
     ws.column_dimensions["A"].width = 18
