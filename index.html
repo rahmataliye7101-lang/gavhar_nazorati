@@ -247,6 +247,17 @@ async function loadHolat() {
         ? `<button class="btn2" onclick="vqYop(${q.no}, false)">Qayta ochish</button>`
         : `<button class="btn2" onclick="vqYop(${q.no}, true)">Vozvratni yakunlash</button> <span class="mut" style="font-size:12px">tugasa bosing</span>`}</div>` : ''}
     </div>`).join('')}` : ''}
+    ${d.oy_pul && d.oy_pul.pullar.length ? `<div class="sec">Oy yakuni · ${E(d.oy_pul.nomi)} · pullar</div>
+    <div class="card">
+      <table><tr><th>Pul</th><th>Oy boshida</th><th>Ishlatildi</th><th>Oy oxirida</th></tr>
+      ${d.oy_pul.pullar.map(p => `<tr><td><b>№${p.no}</b> <span class="mut">${dm(p.sana)}</span></td>
+        <td>${p.yangi ? '<span class="mut">berildi</span> ' : ''}${fmt(p.boshida)}</td><td>${fmt(p.ishlatildi)}</td>
+        <td>${p.oxirida <= 1 ? '<span class="grn">tugadi</span>' : `<b>${fmt(p.oxirida)}</b>`}</td></tr>`).join('')}
+      <tr><td><b>Jami</b></td><td></td><td><b>${fmt(d.oy_pul.pullar.reduce((s, p) => s + p.ishlatildi, 0))}</b></td>
+        <td><b>${fmt(d.oy_pul.pullar.reduce((s, p) => s + Math.max(p.oxirida, 0), 0))}</b></td></tr></table>
+      <div class="mut" style="font-size:12px;margin-top:6px">«Oy oxirida» — keyingi oyga o'tgan qoldiq. Boshqa oyni tepadagi oy filtridan tanlang.</div>
+      ${d.oy_pul.yetmadi.n ? `<div class="red" style="font-size:13px;margin-top:6px">⚠ ${d.oy_pul.yetmadi.n} ta tovar (${usd(d.oy_pul.yetmadi.summa)}) uchun pul yetmadi</div>` : ''}
+    </div>` : ''}
     <div class="sec">Narx nazorati</div>
     <div class="card">
       <div class="g2"><div><div class="lb">Qimmat yozilgan (zarar)</div><div class="v red">${sgn(d.qimmat)} $</div></div>
@@ -546,10 +557,22 @@ async function loadTransh() {
           ${(t.tarkib || []).map(x => `<tr><td>${x.tur === 'Вакс' ? 'Vaks / ko\'zsiz' : E(x.tur)}</td><td>${fmt(x.lom, 2)}</td><td>${fmt(x.ishchilik, 2)}</td>
             <td class="${x.qqs < 0 ? 'red' : ''}">${fmt(x.qqs, 2)}</td><td><b>${fmt(x.jami, 2)}</b></td></tr>`).join('')}</table>
         <div class="mut" style="margin-top:6px">1 gr = lom (birja ${t.birja} × 585/999) + ishchilik + QQS</div>
-        <div class="rw" style="margin-top:12px;justify-content:flex-start;gap:6px">
+        <div class="rw tract" style="margin-top:12px;justify-content:flex-start;gap:6px;flex-wrap:wrap">
           ${closed ? `<button class="btn2" onclick="yop(${t.no}, null)">Qayta ochish</button>`
-                   : `<button class="btn2" onclick="yop(${t.no}, '${today}')">Transhni yopish</button><span class="mut" style="font-size:12px">yopilsa yangi fakturalar faqat keyingi transh narxida tekshiriladi</span>`}
+                   : `<button class="btn2" onclick="yop(${t.no}, '${today}')">Transhni yopish</button>`}
+          <button class="btn2" onclick="trEdit(${t.no})">✏️ Tahrirlash</button>
+          <button class="btn2" style="color:var(--red)" onclick="trDel(${t.no}, '${dmy(t.sana)}', ${t.summa})">🗑 O'chirish</button>
         </div>
+        ${TREDIT === t.no ? `<div style="background:var(--bg);border-radius:12px;padding:10px 12px;margin-top:10px">
+          <div class="g2"><div><label class="f">Sana</label><input type="date" id="es" value="${t.sana}"></div>
+            <div><label class="f">Summa, $</label><input id="esum" inputmode="decimal" value="${t.summa}"></div></div>
+          <label class="f">Birja narxi 999, $/gr</label><input id="eb" inputmode="decimal" value="${t.birja}">
+          <label class="f" style="margin-top:10px">1 gr narxlari, $</label>
+          <div class="g2">${TYPES.map(x => `<div><label class="f" style="margin-top:2px">${x === 'Вакс' ? "Vaks / ko'zsiz" : L(x)}</label><input class="ep" data-t="${x}" inputmode="decimal" value="${t.narxlar[x] != null ? t.narxlar[x] : ''}"></div>`).join('')}</div>
+          <div class="rw" style="gap:8px;margin-top:10px"><button class="btn2" style="flex:1;padding:11px" onclick="TREDIT=null;loadTransh()">Bekor</button>
+            <button class="btn" style="flex:1" onclick="trSave(${t.no})">Saqlash</button></div>
+          <div class="mut" style="font-size:12px;margin-top:6px">Saqlangach hamma fakturalar yangi qiymat bo'yicha qayta hisoblanadi.</div>
+        </div>` : ''}
       </div>`; }).join('')}
     <div class="sec">Sozlama</div>
     <div class="card"><div class="rw"><div style="flex:1"><div class="sm">Ruxsat etilgan farq, $/gr</div><div class="mut">Undan katta farq — xatolik</div></div>
@@ -557,12 +580,27 @@ async function loadTransh() {
     $('#newbtn').onclick = () => newForm(d.transhlar[d.transhlar.length - 1]);
     if (!can('transh_qoshish')) {
       $('#newbtn').style.display = 'none';
-      el.querySelectorAll('[id^=yd], button[onclick^="yop("]').forEach(x => x.style.display = 'none');
+      el.querySelectorAll('.tract').forEach(x => x.style.display = 'none');
       const ch = $('#cheg'); if (ch) ch.closest('.card').style.display = 'none';
       el.querySelectorAll('.sec').forEach(x => { if (x.textContent.trim() === 'Sozlama') x.style.display = 'none'; });
     }
     $('#chegb').onclick = async () => { try { await api('/api/chegara', {v: $('#cheg').value}); haptic('success'); toast('Saqlandi'); invalidate(); } catch (e) { toast(e.message); } };
   } catch (e) { fail(el, e); }
+}
+let TREDIT = null;
+function trEdit(no) { TREDIT = TREDIT === no ? null : no; loadTransh(); }
+async function trSave(no) {
+  const body = {no, sana: $('#es').value, summa: $('#esum').value, birja: $('#eb').value,
+    narxlar: Object.fromEntries([...document.querySelectorAll('.ep')].map(i => [i.dataset.t, i.value]))};
+  try { await api('/api/transh/tahrir', body); haptic('success'); toast(`Transh №${no} saqlandi`); TREDIT = null; invalidate(); loadTransh(); }
+  catch (e) { toast(e.message); }
+}
+async function trDel(no, sana, summa) {
+  const msg = `Transh №${no} (${sana}, ${fmt(summa)} $) ni butunlay o'chiraymi? Fakturalar qolgan pullar bo'yicha qayta hisoblanadi.`;
+  const go = await new Promise(res => tg && tg.showConfirm && tg.initData ? tg.showConfirm(msg, res) : res(confirm(msg)));
+  if (!go) return;
+  try { await api('/api/transh/ochir', {no}); haptic('success'); toast(`Transh №${no} o'chirildi`); invalidate(); loadTransh(); }
+  catch (e) { toast(e.message); }
 }
 async function trFaol(no, faol) {
   try { await api('/api/transh/faol', {no, faol}); haptic('success'); toast(faol ? `Transh №${no} tekshiruvga yoqildi` : `Transh №${no} tekshiruvdan o'chirildi`); invalidate(); loadTransh(); }

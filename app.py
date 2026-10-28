@@ -63,7 +63,8 @@ def verify_init_data(init_data: str):
 PERM_MAP = {("GET", "/api/holat"): "holat", ("GET", "/api/fakturalar"): "faktura", ("GET", "/api/xatolar"): "xatolar",
             ("GET", "/api/transhlar"): "transhlar", ("POST", "/api/transh/tekshir"): "transh_qoshish",
             ("POST", "/api/transh"): "transh_qoshish", ("POST", "/api/transh/yop"): "transh_qoshish",
-            ("POST", "/api/chegara"): "transh_qoshish", ("POST", "/api/vozvrat/yop"): "transh_qoshish", ("POST", "/api/transh/faol"): "transh_qoshish", ("POST", "/api/vozvrat/faol"): "transh_qoshish",
+            ("POST", "/api/chegara"): "transh_qoshish", ("POST", "/api/vozvrat/yop"): "transh_qoshish", ("POST", "/api/transh/faol"): "transh_qoshish", ("POST", "/api/transh/ochir"): "transh_qoshish",
+            ("POST", "/api/transh/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/faol"): "transh_qoshish",
             ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/hisobot"): "hisobot",
             ("POST", "/api/xatolar/excel"): "hisobot", ("POST", "/api/faktura/excel"): "hisobot"}
 
@@ -281,9 +282,19 @@ async def api_holat(request):
         turlar=sorted(({**t, "gramm": r2(t["gramm"]), "farq": r2(t["farq"])} for t in turlar.values()), key=lambda t: -t["n"]),
         faktura_soni=len(inv), oxirgi=inv[0] if inv else None,
         vozvrat={k: r2(v) if isinstance(v, float) else v for k, v in s["vozvrat"].items()},
-        qismlar=[{k: r2(v) if isinstance(v, float) else v for k, v in q.items()} for q in s.get("qismlar", [])],
+        qismlar=[{k: (r2(v) if isinstance(v, float) else v) for k, v in q.items() if k != "narxlar"} for q in s.get("qismlar", [])],
+        oy_pul=oy_pul_json(rows_all, cfg, oy),
         davr=davr,
     ))
+
+
+def oy_pul_json(rows, cfg, oy):
+    oy = oy or max(((r.get("sana") or "")[:7] for r in rows if r.get("sana")), default="")
+    if not oy:
+        return None
+    pl, yt = N.oy_pullar(rows, cfg, oy)
+    return dict(oy=oy, nomi=f"{OY_NOMI[int(oy[5:7])]} {oy[:4]}", yetmadi=dict(n=yt["n"], summa=r2(yt["summa"])),
+                pullar=[{k: (r2(v) if isinstance(v, float) else v) for k, v in p.items()} for p in pl])
 
 
 async def api_xatolar(request):
@@ -562,6 +573,41 @@ async def api_transh_yop(request):
     return web.json_response({"ok": True})
 
 
+async def api_transh_ochir(request):
+    """Траншни бутунлай ўчириш (нусха backup га олинади)."""
+    b = await request.json()
+    async with B.LOCK:
+        cfg = B.load_cfg()
+        n0 = len(cfg["transhlar"])
+        cfg["transhlar"] = [t for t in cfg["transhlar"] if t["no"] != int(b.get("no", 0))]
+        if len(cfg["transhlar"]) == n0:
+            return web.json_response({"errors": ["Бундай транш йўқ"]}, status=404)
+        B.save_cfg(cfg)
+    return web.json_response({"ok": True})
+
+
+async def api_transh_tahrir(request):
+    """Транш суммаси, санаси, биржаси ва нархларини ўзгартириш."""
+    b = await request.json()
+    p = transh_from_body(b)
+    async with B.LOCK:
+        cfg = B.load_cfg()
+        t = next((t for t in cfg["transhlar"] if t["no"] == int(b.get("no", 0))), None)
+        if not t:
+            return web.json_response({"errors": ["Бундай транш йўқ"]}, status=404)
+        if p.get("sana"):
+            t["sana"] = p["sana"]
+        if p.get("summa"):
+            t["summa_usd"] = p["summa"]
+        if p.get("birja"):
+            t["birja_999"] = p["birja"]
+        if p.get("narxlar"):
+            t["narxlar"].update(p["narxlar"])
+        t["manba"] = (t.get("manba") or "") + f" · таҳрирланди {dt.date.today()}"
+        B.save_cfg(cfg)
+    return web.json_response({"ok": True})
+
+
 async def api_transh_faol(request):
     """Траншни текширувга ёқиш / ўчириш."""
     b = await request.json()
@@ -802,6 +848,8 @@ def make_web():
     app.router.add_post("/api/chegara", api_chegara)
     app.router.add_post("/api/vozvrat/yop", api_vozvrat_yop)
     app.router.add_post("/api/transh/faol", api_transh_faol)
+    app.router.add_post("/api/transh/ochir", api_transh_ochir)
+    app.router.add_post("/api/transh/tahrir", api_transh_tahrir)
     app.router.add_get("/api/sozlama", api_sozlama)
     app.router.add_post("/api/vozvrat/faol", api_vozvrat_faol)
     app.router.add_post("/api/vozvrat/qism", api_vozvrat_qism)
@@ -833,6 +881,7 @@ async def start_cmd(update, ctx):
         "📊 Ҳолат — /holat\n"
         "❌ Хатолар Excel да — /xatolar\n"
         "🔎 Фақат текшириш (ойлик, 15 кунлик, эски фактура) — /tekshir\n"
+        "📅 Ой якуни: пуллар қанча ишлатилди, кейинги ойга қанча ўтди — /oy_yakuni\n"
         "⏸ Пулни текширувдан ўчириш / ёқиш — /pul_ochir 1, /pul_yoq 1\n"
         "🔒 Возврат қисмини якунлаш — /vozvrat_yop 2\n"
         "↩️ Охирги фактурани бекор қилиш — /bekor\n\n"
@@ -857,6 +906,7 @@ def make_bot():
     app.add_handler(CommandHandler("vozvrat_yop", B.vozvrat_yop))
     app.add_handler(CommandHandler("vozvrat_och", B.vozvrat_och))
     app.add_handler(CommandHandler(["oylik", "tekshir"], B.oylik))
+    app.add_handler(CommandHandler("oy_yakuni", B.oy_yakuni))
     app.add_handler(CommandHandler("pul_ochir", B.pul_ochir))
     app.add_handler(CommandHandler("pul_yoq", B.pul_yoq))
     app.add_handler(CommandHandler("och", B.och))

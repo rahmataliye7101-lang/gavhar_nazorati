@@ -920,6 +920,21 @@ async def pul_yoq(update: Update, ctx):
     await _pul_faol(update, ctx, True)
 
 
+@need("holat")
+async def oy_yakuni(update: Update, ctx):
+    """/oy_yakuni [2026-10 ёки 10.2026] — ой бўйича пуллар: ой бошида, ишлатилди, кейинги ойга ўтди."""
+    cfg = load_cfg()
+    rows, _ = nazorat.compute(cfg, nazorat.load_ledger(str(LEDGER)), nazorat.load_returns(str(VOZVRAT)))
+    a = " ".join(ctx.args or []).strip()
+    m = re.match(r"(\d{4})-(\d{1,2})", a) or re.match(r"(\d{1,2})[./](\d{4})", a)
+    if m:
+        y, mo = (m.group(1), m.group(2)) if len(m.group(1)) == 4 else (m.group(2), m.group(1))
+        oy = f"{int(y):04d}-{int(mo):02d}"
+    else:
+        oy = max(((r.get("sana") or "")[:7] for r in rows if r.get("sana")), default=dt.date.today().strftime("%Y-%m"))
+    await update.message.reply_text(nazorat.oy_pullar_matn(rows, cfg, oy) + "\n\nБошқа ой: /oy_yakuni 2026-11")
+
+
 @need("faktura_yuklash")
 async def oylik(update: Update, ctx):
     ctx.user_data["oylik_mode"] = True

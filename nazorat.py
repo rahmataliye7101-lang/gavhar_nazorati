@@ -547,6 +547,7 @@ def compute(cfg, ledger, returns=None):
                     used[ti] += c
                     first_date[ti] = first_date[ti] or r["sana"]
                     last_date[ti] = r["sana"]
+                    r.setdefault("sarf", {})[t["no"]] = r.get("sarf", {}).get(t["no"], 0) + c  # шу пулдан айирилган $
             if rem_g > 1e-9:  # пул етмади — фактура санасигача берилган охирги пул нархида
                 t = next((x for x in reversed(tr) if not r["sana"] or x["sana"] <= r["sana"]), None)
                 sabab_ = "tugagan" if t else "berilmagan"
@@ -809,6 +810,44 @@ def write_toplam_report(path, inv):
                 ws.cell(n, 15).fill = red if bad else green
         ws.auto_filter.ref = f"A1:R{n}"
     wb.save(path)
+
+
+def oy_pullar(rows, cfg, oy):
+    """Ой якуни: ҳар пул учун — ой бошида қолдиқ, шу ойда ишлатилди, ой охирида қолдиқ (кейинги ойга ўтди)."""
+    oy0 = oy + "-01"
+    y, m = int(oy[:4]), int(oy[5:7])
+    oy1 = f"{y + (m == 12):04d}-{m % 12 + 1:02d}-01"
+    out = []
+    for t in sorted([t for t in cfg["transhlar"] if t.get("faol", True) and not t.get("faqat_tekshiruv")], key=lambda t: (t["sana"], t["no"])):
+        if t["sana"] >= oy1:
+            continue
+        oldin = sum((r.get("sarf") or {}).get(t["no"], 0) for r in rows if (r.get("sana") or "") < oy0)
+        ichida = sum((r.get("sarf") or {}).get(t["no"], 0) for r in rows if oy0 <= (r.get("sana") or "") < oy1)
+        bosh = t["summa_usd"] - oldin
+        out.append(dict(no=t["no"], sana=t["sana"], summa=t["summa_usd"], birja=t["birja_999"], yangi=t["sana"] >= oy0,
+                        boshida=bosh, ishlatildi=ichida, oxirida=bosh - ichida, yopilgan=t.get("yopilgan_sana")))
+    yetmadi = [r for r in rows if oy0 <= (r.get("sana") or "") < oy1 and r.get("pul_yetmadi")]
+    return out, dict(n=len(yetmadi), summa=sum(r["summa"] or 0 for r in yetmadi))
+
+
+def oy_pullar_matn(rows, cfg, oy):
+    pl, yt = oy_pullar(rows, cfg, oy)
+    L = [f"📅 {OYLAR[int(oy[5:7])].upper()} {oy[:4]} — ой якуни (пуллар)", ""]
+    if not pl:
+        return "\n".join(L + ["Бу ой учун пул йўқ."])
+    for p in pl:
+        L.append(f"💳 {p['no']}-пул ({_dmy(p['sana'])}, биржа {p['birja']}, {p['summa']:,.0f} $)")
+        L.append(f"   {'шу ойда берилди' if p['yangi'] else 'ой бошида қолдиқ'}: {p['boshida']:,.0f} $")
+        L.append(f"   шу ойда ишлатилди: {p['ishlatildi']:,.0f} $")
+        if p["oxirida"] <= 1:
+            L.append("   ой охирида: тугади ✅")
+        else:
+            L.append(f"   ой охирида қолдиқ: {p['oxirida']:,.0f} $ → кейинги ойга ўтди" + (f" (ёпилган {_dmy(p['yopilgan'])})" if p["yopilgan"] else ""))
+    L += ["", f"Жами шу ойда ишлатилди: {sum(p['ishlatildi'] for p in pl):,.0f} $",
+          f"Жами кейинги ойга ўтди: {sum(max(p['oxirida'], 0) for p in pl):,.0f} $"]
+    if yt["n"]:
+        L.append(f"⚠ {yt['n']} та товар ({yt['summa']:,.0f} $) учун пул етмади — пул киритилмаганми ёки суммаси камми, текширинг.")
+    return "\n".join(L)
 
 
 def belgila(rows, cfg):
