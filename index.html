@@ -343,6 +343,13 @@ function doUp(mode) {
   st.textContent = 'Yuklanmoqda…'; x.send(fd);
 }
 
+async function fakDel(key, fno, fil, n) {
+  const msg = `${fno} · ${fil} (${n} ta tovar) fakturasini o'chiraymi? Pullar qayta hisoblanadi. Botga /bekor bilan qaytarish mumkin.`;
+  const go = await new Promise(res => tg && tg.showConfirm && tg.initData ? tg.showConfirm(msg, res) : res(confirm(msg)));
+  if (!go) return;
+  try { await api('/api/faktura/ochir', {key}); haptic('success'); toast('Faktura o\'chirildi'); FOpen = null; dropSub('inv'); invalidate(); loadFaktura(); }
+  catch (e) { toast(e.message); }
+}
 async function fakExcel(key, btn) {
   btn.disabled = true; const t = btn.textContent; btn.textContent = 'Yuborilmoqda…';
   try { await api('/api/faktura/excel', {key}); haptic('success'); toast('Excel chatga yuborildi'); }
@@ -448,6 +455,7 @@ function invCard(a) {
               : `<div class="mut" style="font-size:12px;margin-top:3px">${E(L((vs[0].manba.match(/\(([^)]*)\)/) || [, ''])[1]))}</div>`
                 + Object.values(vs.reduce((m, v) => { const k = v.tur; (m[k] = m[k] || {tur: v.tur, n: 0, g: 0, narx: v.narx}); m[k].n++; m[k].g += v.gramm || 0; return m; }, {}))
                   .sort((a, b) => b.g - a.g).map(t => `<div class="mut" style="font-size:12px;margin-top:3px">• ${L(t.tur)}: ${t.n} ta · ${fmt(t.g, 2)} gr × ${fmt(t.narx, 2)} $ — vozvrat narxiga mos</div>`).join('')}</div>`; }).join('')}` : ''}
+      ${ME && ME.admin ? `<button class="btn2" style="width:100%;margin-top:10px;padding:10px;color:var(--red)" onclick="fakDel('${esc(a.key)}', '${esc(a.faktura)}', '${esc(a.filial)}', ${a.n})">🗑 Fakturani o'chirish (xato yuklangan bo'lsa)</button>` : ''}
       ${can('hisobot') ? `<button class="btn2" style="width:100%;margin-top:10px;padding:10px" onclick="fakExcel('${esc(a.key)}', this)">📑 To'liq Excel — hamma SKU (to'g'ri / xato va nima bo'yicha)</button>` : ''}
       <div class="rw" style="margin-top:8px"><span class="mut">Hisob bo'yicha ${usd(a.hisob, 2)}</span>
         ${a.bad ? `<span class="rw" style="gap:6px">${can('hisobot') ? `<button class="btn2" onclick="xatoExcel({faktura:'${esc(a.faktura)}'}, this)">📑 Excel</button>` : ''}
@@ -733,12 +741,64 @@ function sozlamaHtml() {
         <div class="g2">${TYPES.map(t => `<div><label class="f" style="margin-top:2px">${t === 'Вакс' ? "Vaks / ko'zsiz" : L(t)}</label><input class="vqp" data-t="${t}" inputmode="decimal"></div>`).join('')}</div>
         <button class="btn" style="margin-top:10px" onclick="sozVqSave()">Saqlash</button></div>` : ''}
       <div class="mut" style="font-size:12px;margin-top:10px">Vozvrat ro'yxatini (Excel) yangilash: Faktura → 📤 Excel yuklash → «Vozvrat ro'yxati».</div>
-    </div>`;
+      <div class="sm" style="font-weight:600;margin-top:16px">💍 Bilak uzuk va zanjir seriyalari</div>
+      <div class="mut" style="font-size:12px;margin:4px 0 6px">Bu seriyalar <b>tosh narxida</b> hisoblanadi (vaks → Vaks narxi). Qolgan bilak uzuklar — Braslet narxi, zanjirlar — Dorika narxi.</div>
+      <div class="rw" style="gap:8px"><input id="seriya" value="${esc((SOZ.seriya_tosh || []).join(', '))}" placeholder="QSG, QSW, QQF, ZSG" style="flex:1">
+        <button class="btn2" onclick="sozSeriya()">Saqlash</button></div>
+    </div>
+    ${qoidalarHtml()}`;
 }
 async function sozNav(no, navbat) { try { await api('/api/transh/faol', {no, navbat}); haptic('success'); toast(navbat ? `№${no} kundalik navbatga qo'shildi` : `№${no} faqat tekshiruv uchun`); invalidate(); loadAdmin(ADM); } catch (e) { toast(e.message); } }
 async function sozTr(no, faol) { try { await api('/api/transh/faol', {no, faol}); haptic('success'); toast(faol ? `№${no} yoqildi` : `№${no} o'chirildi`); invalidate(); loadAdmin(ADM); } catch (e) { toast(e.message); } }
 async function sozVz(no, faol) { try { await api('/api/vozvrat/faol', {no, faol}); haptic('success'); toast(faol ? `Vozvrat ${no}-qism yoqildi` : `Vozvrat ${no}-qism o'chirildi`); invalidate(); loadAdmin(ADM); } catch (e) { toast(e.message); } }
 function sozNewTr() { show('transh'); setTimeout(() => { const b = $('#newbtn'); if (b) b.click(); }, 700); }
+function qoidalarHtml() {
+  const ser = (SOZ && SOZ.seriya_tosh || []).join(', ') || '—';
+  const li = t => `<li style="margin:4px 0">${t}</li>`;
+  return `<details class="card" style="margin-top:12px;padding:0">
+    <summary style="padding:14px 16px;font-weight:600;cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center">
+      <span>📘 Qoidalar <span class="mut" style="font-weight:400;font-size:12px">— narx va tekshiruv qanday ishlaydi</span></span><span class="mut">›</span></summary>
+    <div style="padding:0 16px 14px">
+    <details><summary style="font-weight:600;cursor:pointer">💰 1 gramm narxi qanday hisoblanadi</summary>
+      <ul style="padding-left:18px;margin:8px 0;font-size:13px">
+        ${li('<b>1 gr narxi = lom + ishchilik + QQS</b>')}
+        ${li('Lom = pul berilgan kungi birja (999) narxi × 585 / 999')}
+        ${li('Ishchilik tur bo\'yicha: Brilliant 10.5 · Vaks/Ko\'zsiz 8.5 · Fianit 7.0 · Dorika, Braslet, Detskiy, Van Klif 11.0')}
+        ${li('Ruxsat etilgan farq: ±' + (SOZ && SOZ.chegara ? SOZ.chegara : 0.3) + ' $/gr — undan katta farq xato hisoblanadi')}
+      </ul></details>
+    <details style="margin-top:8px"><summary style="font-weight:600;cursor:pointer">💍 Tovar turi (qaysi narx olinadi)</summary>
+      <table style="margin-top:8px;font-size:13px"><tr><th>Tovar</th><th>Narxi</th></tr>
+        <tr><td>Nomida «brilliant»</td><td>Brilliant</td></tr>
+        <tr><td>Nomida «waks / vaks»</td><td>Vaks</td></tr>
+        <tr><td>Nomida «fianit»</td><td>Fianit</td></tr>
+        <tr><td>Nomida «dorika»</td><td>Dorika</td></tr>
+        <tr><td>Van Cleef / Klif</td><td>Van Klif</td></tr>
+        <tr><td>Tosh turi yozilmagan</td><td>Detskiy</td></tr>
+        <tr><td><b>Bilak uzuk</b> (tosh turiga qaramay)</td><td><b>Braslet</b></td></tr>
+        <tr><td><b>Zanjir</b> (tosh turiga qaramay)</td><td><b>Dorika</b></td></tr>
+        <tr><td><b>Istisno seriyalar:</b> ${E(ser)}</td><td><b>Tosh narxi</b> (vaks → Vaks)</td></tr>
+      </table>
+      <div class="mut" style="font-size:12px;margin-top:6px">Gavhar fakturalaridan: QQG bilak uzuk va ZQG zanjir — Braslet/Dorika narxida; QSG, QSW, QQF bilak uzuk va ZSG zanjir — Vaks narxida. Seriyalar ro'yxatini yuqorida o'zgartirasiz.</div></details>
+    <details style="margin-top:8px"><summary style="font-weight:600;cursor:pointer">🔎 Faktura qanday tekshiriladi</summary>
+      <ol style="padding-left:18px;margin:8px 0;font-size:13px">
+        ${li('<b>Pul narxi:</b> faktura sanasigacha berilgan, yopilmagan va «Tekshiruvda» belgilangan <b>eng eski pul</b>. Tovar summasi shu puldan ayiriladi, tugasa keyingisiga o\'tadi.')}
+        ${li('<b>Vozvrat:</b> mos kelmasa — vozvrat ro\'yxati (faktura sanasidan oldin qaytarilgani), keyin summa bo\'yicha vozvratlar (2-qism…). Vozvrat tovar puldan ayirilmaydi.')}
+        ${li('<b>Boshqa pullar:</b> shu sanagacha berilgan boshqa pul narxi.')}
+        ${li('<b>Hech biriga tushmasa — ❌ xato</b> (qimmat yoki arzon) va sababi yoziladi.')}
+      </ol>
+      <ul style="padding-left:18px;margin:4px 0;font-size:13px">
+        ${li('Oldin tashlangan faktura qayta tashlansa — faqat tekshiriladi, pul ikki marta ayirilmaydi.')}
+        ${li('Eski sana (birinchi puldan oldin), oylik/15 kunlik prixod yoki «🔎 Faqat tekshirish» — puldan ayirilmaydi.')}
+        ${li('Pul summasi, narxi o\'zgartirilsa yoki transh o\'chirilsa — hamma fakturalar o\'zi qayta hisoblanadi.')}
+        ${li('Xato yuklansa — botga /bekor.')}
+      </ul></details>
+    </div>
+  </details>`;
+}
+async function sozSeriya() {
+  try { await api('/api/seriya', {seriya: $('#seriya').value}); haptic('success'); toast('Saqlandi — fakturalar qayta hisoblandi'); invalidate(); loadAdmin(ADM); }
+  catch (e) { toast(e.message); }
+}
 async function sozVqSave() {
   const body = {summa: $('#vqs').value, birja: $('#vqb').value, narxlar: Object.fromEntries([...document.querySelectorAll('.vqp')].map(i => [i.dataset.t, i.value]))};
   try { const r = await api('/api/vozvrat/qism', body); haptic('success'); toast(`Vozvrat ${r.no}-qism saqlandi`); VQFORM = false; invalidate(); loadAdmin(ADM); }

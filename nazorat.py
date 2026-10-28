@@ -447,6 +447,23 @@ def returns_stats(returns):
 
 
 # ---------------- тур аниқлаш ----------------
+# Gavhar фактураларидан аниқланди: шу серия (модел олд қўшимчаси) билак узук/занжирлар ТОШ НАРХИДА (вакс → Вакс нархи),
+# қолганлари (QQG, ZQG …) — Браслет/Дорика нархида. Admin да ўзгартирса бўлади (cfg["seriya_tosh"]).
+SERIYA_TOSH_DEFAULT = ["QSG", "QSW", "QSF", "QQF", "ZSG"]
+SERIYA_TOSH = set(SERIYA_TOSH_DEFAULT)
+SERIYA_RE = re.compile(r"\b([A-Z]{2,4})\d{3,}")
+
+
+def seriya_of(nomi):
+    m = SERIYA_RE.search(str(nomi or "").upper())
+    return m.group(1) if m else ""
+
+
+def seriya_sozla(cfg):
+    global SERIYA_TOSH
+    SERIYA_TOSH = {x.strip().upper() for x in (cfg.get("seriya_tosh") if cfg.get("seriya_tosh") is not None else SERIYA_TOSH_DEFAULT) if x.strip()}
+
+
 BRASLET_RE = re.compile(r"билак|билаг|браслет|bilak|bilag|braslet|bracelet|б/узук")
 ZANJIR_RE = re.compile(r"занжир|zanjir|цеп|chain")
 VANCLIF = ("van cl", "vancl", "van-cl", "ван клиф", "ванклиф", "клиф", "klif", "cleef", "clef")
@@ -458,9 +475,11 @@ def tur(nomi, kat):
     first = n.split()[0] if n.split() else ""
     nom = n.split(" proba")[0]  # товар номи (тош/вазн қисмисиз)
     # 1) категория бўйича (тошга қарамайди): билак узук / браслет → Браслет нархи, занжир → Дорика нархи
-    if BRASLET_RE.search(k) or BRASLET_RE.search(nom):
+    #    истисно: «тош нархидаги» сериялар (QSG, QSW, ZSG …) — тош тури бўйича (пастга ўтади)
+    tosh_seriya = seriya_of(nomi) in SERIYA_TOSH
+    if (BRASLET_RE.search(k) or BRASLET_RE.search(nom)) and not tosh_seriya:
         return "Браслет"
-    if ZANJIR_RE.search(k) or ZANJIR_RE.match(first):
+    if (ZANJIR_RE.search(k) or ZANJIR_RE.match(first)) and not tosh_seriya:
         return "Дорика"
     if "dorika" in n or "дорика" in n:  # Tosh turi - Dorika → Дорика нархи
         return "Дорика"
@@ -482,6 +501,7 @@ def tur(nomi, kat):
 
 # ---------------- асосий ҳисоб ----------------
 def compute(cfg, ledger, returns=None):
+    seriya_sozla(cfg)
     returns = returns or []
     for ret in returns:
         ret.pop("_used", None)
@@ -914,8 +934,14 @@ def sabab(r, tr, parts):
         if x["no"] != tno:
             p = x["narxlar"].get(r["tur"])
             if p and abs(f - p) <= 0.05:
-                return (f"Бошқа пул ({_dmy(x['sana'])}) нархи қўйилган. Ҳозир {_dmy(t['sana'])} даги пул ишлатиляпти — "
-                        f"нархи {kerak:.2f} $.")
+                m = (f"Бошқа пул ({_dmy(x['sana'])}) нархи қўйилган. Ҳозир {_dmy(t['sana'])} даги пул ишлатиляпти — "
+                     f"нархи {kerak:.2f} $.")
+                if x.get("yopilgan_sana") and x["sana"] <= (r.get("sana") or "9"):
+                    m += (f" ⚠ {_dmy(x['sana'])} пули ботда ЁПИЛГАН — агар у аслида тугамаган бўлса, "
+                          "Transhlar да «Qayta ochish» ни босинг, шунда бу товарлар тўғри чиқади.")
+                elif x["sana"] <= (r.get("sana") or "9"):
+                    m += (f" ⚠ Ботда {_dmy(x['sana'])} пули тугаган — суммаси тўғри киритилганини текширинг.")
+                return m
     labor = kerak - t["birja_999"] * K
     impl = (f - labor) / K
     if abs(impl - t["birja_999"]) > 0.3:
@@ -1310,6 +1336,12 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
         elif jf - jh < -0.5:
             L.append(f"👉 Жами КАМ ёзилган: {abs(jf - jh):,.2f} $")
         L += L_xulosa_jami(new_res, tmap)
+        yop_n = sum(1 for r in new_res if "ЁПИЛГАН" in (r.get("izoh") or ""))
+        tug_n = sum(1 for r in new_res if "пули тугаган" in (r.get("izoh") or ""))
+        if yop_n:
+            L.append(f"\n⚠ {yop_n} та товарда Gavhar ЁПИЛГАН пул нархини қўйган. Пул аслида тугамаган бўлса — Transhlar да «Qayta ochish» ни босинг.")
+        if tug_n:
+            L.append(f"\n⚠ {tug_n} та товарда Gavhar ботда тугаган пул нархини қўйган — ўша пул суммаси тўғрилигини текширинг.")
         if badinv:
             L.append("\n❌ Хато бор фактуралар:")
             for (fno, fil, sana), rs in sorted(badinv, key=lambda kv: -sum(r["farq"] or 0 for r in kv[1] if r["holat"].startswith("⚠")))[:25]:
@@ -1501,6 +1533,7 @@ def sana_tekshir(cfg, rows, returns=None):
     """АВТО режим (эски фактура / ойлик приход): пул айирилмайди, ҳар товар учун бот ўзи топади:
     ① фактура санасидан олдинги энг яқин ёқилган пул нархи → ② возвратлар (санаси олдин бўлгани) →
     ③ бошқа ёқилган пуллар → ④ ҳеч бирига тушмаса ❌ (① даги пул нархи бўйича)."""
+    seriya_sozla(cfg)
     returns = returns or []
     for x in returns:
         x.pop("_used", None)

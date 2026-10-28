@@ -65,7 +65,7 @@ PERM_MAP = {("GET", "/api/holat"): "holat", ("GET", "/api/fakturalar"): "faktura
             ("POST", "/api/transh"): "transh_qoshish", ("POST", "/api/transh/yop"): "transh_qoshish",
             ("POST", "/api/chegara"): "transh_qoshish", ("POST", "/api/vozvrat/yop"): "transh_qoshish", ("POST", "/api/transh/faol"): "transh_qoshish", ("POST", "/api/transh/ochir"): "transh_qoshish",
             ("POST", "/api/transh/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/faol"): "transh_qoshish",
-            ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/hisobot"): "hisobot",
+            ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/seriya"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
             ("POST", "/api/xatolar/excel"): "hisobot", ("POST", "/api/faktura/excel"): "hisobot"}
 
 
@@ -431,6 +431,26 @@ async def api_yuklash(request):
         shutil.rmtree(td, ignore_errors=True)
 
 
+async def api_faktura_ochir(request):
+    """Админ: битта фактурани реестрдан ўчириш (нусха олинади)."""
+    if not is_admin_req(request):
+        return web.json_response({"errors": ["Фақат админлар учун"]}, status=403)
+    import shutil
+    b = await request.json()
+    fno, fil, sana = (b.get("key") or "||").split("|")[:3]
+    async with B.LOCK:
+        led = N.load_ledger(str(B.LEDGER))
+        qol = [r for r in led if not (r.get("faktura") == fno and r.get("filial") == fil and r.get("sana") == sana)]
+        if len(qol) == len(led):
+            return web.json_response({"errors": ["Фактура топилмади"]}, status=404)
+        B.BACKUP.mkdir(parents=True, exist_ok=True)
+        bk = B.BACKUP / f"ledger_{dt.datetime.now():%Y%m%d_%H%M%S}.csv"
+        shutil.copy(B.LEDGER, bk)
+        N.save_ledger(str(B.LEDGER), qol)
+        (B.DATA / "last_backup.txt").write_text(str(bk))  # /bekor билан қайтариш мумкин
+    return web.json_response({"ok": True, "n": len(led) - len(qol)})
+
+
 async def api_faktura_excel(request):
     """Битта фактуранинг ТЎЛИҚ Excel и (ҳамма SKU: тўғри/хато ва нима бўйича) — чатга юборилади."""
     if TG_APP is None:
@@ -641,7 +661,19 @@ async def api_sozlama(request):
     for q in s.get("qismlar", []):
         vozvrat.append(dict(no=q["no"], nomi=f"Сумма бўйича (биржа {q['birja']})", summa=r2(q["summa"]), berilgan=r2(q["berilgan"]),
                             qolgan=r2(q["qolgan"]), faol=q.get("faol", True), yopilgan=q.get("yopilgan"), birja=q["birja"]))
-    return web.json_response({"transhlar": tr, "vozvrat": vozvrat})
+    seriya = cfg.get("seriya_tosh") if cfg.get("seriya_tosh") is not None else N.SERIYA_TOSH_DEFAULT
+    return web.json_response({"transhlar": tr, "vozvrat": vozvrat, "seriya_tosh": seriya})
+
+
+async def api_seriya(request):
+    """Билак узук / занжир: тош нархида ҳисобланадиган сериялар рўйхати (QSG, ZSG …)."""
+    b = await request.json()
+    lst = [x.strip().upper() for x in re.split(r"[,\s]+", str(b.get("seriya") or "")) if x.strip()]
+    async with B.LOCK:
+        cfg = B.load_cfg()
+        cfg["seriya_tosh"] = lst
+        B.save_cfg(cfg)
+    return web.json_response({"ok": True, "seriya_tosh": lst})
 
 
 async def api_vozvrat_faol(request):
@@ -851,10 +883,12 @@ def make_web():
     app.router.add_post("/api/transh/ochir", api_transh_ochir)
     app.router.add_post("/api/transh/tahrir", api_transh_tahrir)
     app.router.add_get("/api/sozlama", api_sozlama)
+    app.router.add_post("/api/seriya", api_seriya)
     app.router.add_post("/api/vozvrat/faol", api_vozvrat_faol)
     app.router.add_post("/api/vozvrat/qism", api_vozvrat_qism)
     app.router.add_post("/api/yuklash", api_yuklash)
     app.router.add_post("/api/faktura/excel", api_faktura_excel)
+    app.router.add_post("/api/faktura/ochir", api_faktura_ochir)
     app.router.add_post("/api/hisobot", api_hisobot)
     app.router.add_get("/static/chart.umd.min.js", lambda r: web.FileResponse(BASE / "chart.umd.min.js"))
     app.router.add_get("/health", lambda r: web.Response(text="ok"))

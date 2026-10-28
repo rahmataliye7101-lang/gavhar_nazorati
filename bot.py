@@ -7,6 +7,7 @@
   DATA_DIR       — маълумот папкаси (Railway Volume шу ерга уланади). Стандарт: /data
 """
 import asyncio
+from collections import OrderedDict
 import datetime as dt
 import filecmp
 import json
@@ -749,6 +750,8 @@ async def on_text(update: Update, ctx):
             except Exception:
                 pass
             return
+    if await toz_matn(update, ctx, text):
+        return
     aw = ctx.user_data.get("await_summa")
     if aw:
         m = re.fullmatch(r"\s*([\d\s.,]+)\s*(\$|доллар|доллор|usd)?\s*", text, re.I)
@@ -1219,20 +1222,73 @@ async def _batch_run(chat):
         shutil.rmtree(b["dir"], ignore_errors=True)
 
 
+# ---------------- тозалаш: ой / фактура / сана оралиғи / ҳаммаси — тасдиқ ва тиклаш билан ----------------
+TOZ = {}  # chat_id -> {"amal":..., "keys": set(), "matn":...}  (тасдиқ кутаётган)
+TIKLASH = {}  # chat_id -> {"ledger": path, "transh": path, "vozvrat": path}
+
+
+def _inv_rows(rows):
+    inv = OrderedDict()
+    for r in rows:
+        inv.setdefault((r.get("faktura"), r.get("filial"), r.get("sana")), []).append(r)
+    return inv
+
+
+def _toz_menu():
+    led = nazorat.load_ledger(str(LEDGER))
+    cfg = load_cfg()
+    inv = _inv_rows(led)
+    txt = (f"🧹 Тозалаш\nҲозир базада: {len(cfg['transhlar'])} та пул, {len(inv)} та фактура ({len(led)} та товар), "
+           f"{len(nazorat.load_returns(str(VOZVRAT)))} та возврат.\n\nНимани ўчирамиз? (ҳар доим аввал тасдиқ сўрайман ва тиклаш мумкин)")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Ой бўйича фактуралар", callback_data="rs_oy")],
+        [InlineKeyboardButton("🧾 Битта фактура", callback_data="rs_bir"),
+         InlineKeyboardButton("📆 Сана оралиғи", callback_data="rs_sana")],
+        [InlineKeyboardButton("🧾 Ҳамма фактуралар", callback_data="rs_inv")],
+        [InlineKeyboardButton("↩️ Возвратлар (рўйхат ва суммали)", callback_data="rs_ret")],
+        [InlineKeyboardButton("🗑 Ҳаммаси (пул + фактура + возврат)", callback_data="rs_all")],
+        [InlineKeyboardButton("❌ Ёпиш", callback_data="rs_no")]])
+    return txt, kb
+
+
 @admin_only
 async def tozalash(update: Update, ctx):
-    cfg = load_cfg()
-    n_tr = len(cfg["transhlar"])
-    n_rows = len(nazorat.load_ledger(str(LEDGER)))
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗑 Ҳаммасини ўчириш (транш + фактура + возврат)", callback_data="rs_all")],
-        [InlineKeyboardButton("🧾 Фақат фактураларни ўчириш", callback_data="rs_inv")],
-        [InlineKeyboardButton("↩️ Фақат возврат рўйхатини ўчириш", callback_data="rs_ret")],
-        [InlineKeyboardButton("❌ Бекор", callback_data="rs_no")]])
-    await update.message.reply_text(
-        f"Ҳозир базада: {n_tr} та транш, {n_rows} та фактура қатори, "
-        f"{len(nazorat.load_returns(str(VOZVRAT)))} та возврат.\n\n"
-        "Нимани ўчирай? (ўчиришдан олдин нусха сақланади)", reply_markup=kb)
+    txt, kb = _toz_menu()
+    await update.message.reply_text(txt, reply_markup=kb)
+
+
+async def _toz_tasdiq(msg, chat, amal, keys, sarlavha, edit=True):
+    """Ўчиришдан олдин нима ўчишини кўрсатиб, тасдиқ сўрайди."""
+    led = nazorat.load_ledger(str(LEDGER))
+    if amal in ("inv_keys",):
+        sel = [r for r in led if (r.get("faktura"), r.get("filial"), r.get("sana")) in keys]
+        if not sel:
+            t = "Бундай фактура топилмади."
+            return await (msg.edit_text(t) if edit else msg.reply_text(t))
+        inv = _inv_rows(sel)
+        summa = sum(nazorat.to_num(r.get("summa")) or 0 for r in sel)
+        t = (f"⚠️ {sarlavha}\nЎчади: {len(inv)} та фактура · {len(sel)} та товар · {summa:,.2f} $\n"
+             + "\n".join(f"• {k[0]} · {k[1]} · {nazorat._dmy(k[2])}" for k in list(inv)[:8])
+             + (f"\n• ... яна {len(inv) - 8} та" if len(inv) > 8 else "")
+             + "\n\nПуллар ва возвратлар ўзгармайди — фақат бу фактуралар ўчади ва қолганлари қайта ҳисобланади.")
+    else:
+        t = sarlavha
+    TOZ[chat] = {"amal": amal, "keys": keys}
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Ҳа, ўчир", callback_data="rs_ok"),
+                                InlineKeyboardButton("❌ Бекор", callback_data="rs_no")]])
+    return await (msg.edit_text(t, reply_markup=kb) if edit else msg.reply_text(t, reply_markup=kb))
+
+
+def _nusxa(*paths):
+    BACKUP.mkdir(parents=True, exist_ok=True)
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = {}
+    for nom, p in paths:
+        if p.exists():
+            d = BACKUP / f"toz_{nom}_{stamp}{p.suffix}"
+            shutil.copy(p, d)
+            out[nom] = str(d)
+    return out
 
 
 async def tozalash_cb(update: Update, ctx):
@@ -1240,33 +1296,131 @@ async def tozalash_cb(update: Update, ctx):
     if not is_admin(update):
         return await q.answer("Фақат админлар учун", show_alert=True)
     await q.answer()
-    if q.data == "rs_no":
+    chat = update.effective_chat.id
+    d = q.data
+    if d == "rs_no":
+        TOZ.pop(chat, None); ctx.user_data.pop("toz_kut", None)
         return await q.edit_message_text("Бекор қилинди. Ҳеч нарса ўчирилмади.")
-    if q.data == "rs_ret":
+    if d == "rs_menu":
+        txt, kb = _toz_menu()
+        return await q.edit_message_text(txt, reply_markup=kb)
+    if d == "rs_oy":
+        inv = _inv_rows(nazorat.load_ledger(str(LEDGER)))
+        oylar = OrderedDict()
+        for k, rs in inv.items():
+            o = (k[2] or "")[:7]
+            x = oylar.setdefault(o, [0, 0.0])
+            x[0] += 1; x[1] += sum(nazorat.to_num(r.get("summa")) or 0 for r in rs)
+        if not oylar:
+            return await q.edit_message_text("Фактура йўқ.")
+        rows = [[InlineKeyboardButton(f"{nazorat.OYLAR[int(o[5:7])]} {o[:4]} — {n_} та фактура, {s_:,.0f} $", callback_data=f"rs_oyx:{o}")]
+                for o, (n_, s_) in sorted(oylar.items(), reverse=True) if o]
+        rows.append([InlineKeyboardButton("⬅️ Орқага", callback_data="rs_menu")])
+        return await q.edit_message_text("📅 Қайси ойнинг фактураларини ўчирамиз?", reply_markup=InlineKeyboardMarkup(rows))
+    if d.startswith("rs_oyx:"):
+        o = d.split(":", 1)[1]
+        keys = {k for k in _inv_rows(nazorat.load_ledger(str(LEDGER))) if (k[2] or "").startswith(o)}
+        return await _toz_tasdiq(q.message, chat, "inv_keys", keys, f"{nazorat.OYLAR[int(o[5:7])]} {o[:4]} фактуралари ўчирилади.")
+    if d == "rs_bir":
+        ctx.user_data["toz_kut"] = "bir"
+        return await q.edit_message_text("🧾 Фактура рақамини ёки дўкон номини ёзинг (масалан: GVR-05102026 ёки Жарқўрғон):")
+    if d == "rs_sana":
+        ctx.user_data["toz_kut"] = "sana"
+        return await q.edit_message_text("📆 Сана оралиғини ёзинг, масалан:\n01.10.2026 15.10.2026\n(битта кун бўлса — битта сана)")
+    if d.startswith("rs_f:"):
+        i = int(d.split(":")[1])
+        tops = ctx.user_data.get("toz_top") or []
+        if i >= len(tops):
+            return await q.edit_message_text("Эскирган рўйхат — /tozalash ни қайта ёзинг.")
+        k = tuple(tops[i])
+        return await _toz_tasdiq(q.message, chat, "inv_keys", {k}, f"Фактура {k[0]} · {k[1]} ўчирилади.")
+    if d == "rs_inv":
+        led = nazorat.load_ledger(str(LEDGER))
+        return await _toz_tasdiq(q.message, chat, "inv_keys", set(_inv_rows(led)), "ҲАММА фактуралар ўчирилади.")
+    if d == "rs_ret":
+        n_ = len(nazorat.load_returns(str(VOZVRAT)))
+        nq = len(load_cfg().get("vozvrat_qismlar") or [])
+        return await _toz_tasdiq(q.message, chat, "ret", None,
+                                 f"⚠️ Возврат рўйхати ({n_} та товар) ва {nq} та суммали возврат қисми ўчирилади.\nПуллар ва фактуралар қолади.")
+    if d == "rs_all":
+        cfg = load_cfg()
+        return await _toz_tasdiq(q.message, chat, "all", None,
+                                 f"⚠️ ҲАММАСИ ўчирилади: {len(cfg['transhlar'])} та пул, {len(_inv_rows(nazorat.load_ledger(str(LEDGER))))} та фактура, "
+                                 f"возвратлар. Фойдаланувчилар ва созламалар қолади.")
+    if d == "rs_ok":
+        z = TOZ.pop(chat, None)
+        if not z:
+            return await q.edit_message_text("Эскирган тасдиқ — /tozalash ни қайта ёзинг.")
         async with LOCK:
-            backup(VOZVRAT)
-            nazorat.save_returns(str(VOZVRAT), [])
-            cfg = load_cfg(); cfg["vozvrat_qismlar"] = []; cfg.pop("vozvrat_1", None); save_cfg(cfg)
-        return await q.edit_message_text("✅ Возврат рўйхати ўчирилди. Янги рўйхатни /vozvrat орқали ташланг.")
-    async with LOCK:
-        backup(LEDGER)
-        nazorat.save_ledger(str(LEDGER), [])
-        if q.data == "rs_all":
-            backup(VOZVRAT)
-            nazorat.save_returns(str(VOZVRAT), [])
-            cfg = load_cfg()
-            cfg["transhlar"] = []
-            cfg["vozvrat_qismlar"] = []
-            save_cfg(cfg)  # save_cfg ўзи нусха олади
-        (DATA / "last_backup.txt").unlink(missing_ok=True)
-    if q.data == "rs_all":
-        await q.edit_message_text(
-            "✅ Ҳаммаси ўчирилди. База бўш.\n\n"
-            "Энди биринчи транш (пул) ни киритинг: Gavhar юборган нарх хабарини шу ерга forward қилинг "
-            "ва сўралганда суммани ёзинг (ёки mini app → Transhlar → «+ Yangi transh»).\n"
-            "Кейин фактураларни ташлайверасиз.")
-    else:
-        await q.edit_message_text("✅ Фактуралар ўчирилди, траншлар қолди. Фактураларни қайтадан ташлашингиз мумкин.")
+            TIKLASH[chat] = _nusxa(("ledger", LEDGER), ("transh", TRANSH), ("vozvrat", VOZVRAT))
+            if z["amal"] == "inv_keys":
+                led = nazorat.load_ledger(str(LEDGER))
+                qol = [r for r in led if (r.get("faktura"), r.get("filial"), r.get("sana")) not in z["keys"]]
+                nazorat.save_ledger(str(LEDGER), qol)
+                t = f"✅ {len(led) - len(qol)} та товар ўчирилди. Қолган фактуралар қайта ҳисобланди."
+            elif z["amal"] == "ret":
+                nazorat.save_returns(str(VOZVRAT), [])
+                cfg = load_cfg(); cfg["vozvrat_qismlar"] = []; cfg.pop("vozvrat_1", None); save_cfg(cfg)
+                t = "✅ Возвратлар ўчирилди. Янги рўйхатни /vozvrat орқали ташланг."
+            else:
+                nazorat.save_ledger(str(LEDGER), [])
+                nazorat.save_returns(str(VOZVRAT), [])
+                cfg = load_cfg(); cfg["transhlar"] = []; cfg["vozvrat_qismlar"] = []; cfg.pop("vozvrat_1", None); save_cfg(cfg)
+                t = "✅ Ҳаммаси ўчирилди. Энди пулларни киритинг, кейин фактураларни ташланг."
+            (DATA / "last_backup.txt").unlink(missing_ok=True)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Тиклаш (бекор қилиш)", callback_data="rs_undo")]])
+        return await q.edit_message_text(t, reply_markup=kb)
+    if d == "rs_undo":
+        b = TIKLASH.pop(chat, None)
+        if not b:
+            return await q.edit_message_text(q.message.text + "\n\n(тиклаш нусхаси топилмади)")
+        async with LOCK:
+            for nom, dst in (("ledger", LEDGER), ("transh", TRANSH), ("vozvrat", VOZVRAT)):
+                if b.get(nom) and Path(b[nom]).exists():
+                    shutil.copy(b[nom], dst)
+        return await q.edit_message_text(q.message.text + "\n\n↩️ Тикланди — ҳаммаси олдинги ҳолатига қайтди.")
+
+
+_CY = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюяўқғҳ",
+               ["a", "b", "v", "g", "d", "e", "yo", "j", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s", "t", "u", "f", "x",
+                "ts", "ch", "sh", "sh", "", "i", "", "e", "yu", "ya", "o", "q", "g", "h"]))
+
+
+def nk(t):
+    """Кирилл/лотин фарқсиз қидириш учун: «Ромитан» ва «romitan» бир хил."""
+    t = "".join(_CY.get(c, c) for c in str(t or "").lower())
+    return re.sub(r"[^a-z0-9]+", " ", re.sub(r"[ʻʼ’'`‘]", "", t).replace("filiali", "")).strip()
+
+
+async def toz_matn(update: Update, ctx, text):
+    """Тозалаш: фактура рақами ёки сана оралиғи матн билан киритилганда. True — ишлатилди."""
+    kut = ctx.user_data.get("toz_kut")
+    if not kut or not is_admin(update):
+        return False
+    ctx.user_data.pop("toz_kut", None)
+    chat = update.effective_chat.id
+    inv = _inv_rows(nazorat.load_ledger(str(LEDGER)))
+    if kut == "sana":
+        ds = [nazorat.parse_date(x) for x in re.findall(r"\d{1,2}[./-]\d{1,2}[./-]\d{4}|\d{4}-\d{2}-\d{2}", text)]
+        ds = [x for x in ds if x]
+        if not ds:
+            await update.message.reply_text("Сана тушунилмади. /tozalash ни қайта ёзинг.")
+            return True
+        a, b = min(ds).isoformat(), max(ds).isoformat()
+        keys = {k for k in inv if a <= (k[2] or "") <= b}
+        await _toz_tasdiq(update.message, chat, "inv_keys", keys, f"{nazorat._dmy(a)} – {nazorat._dmy(b)} оралиғидаги фактуралар ўчирилади.", edit=False)
+        return True
+    q_ = text.strip().lower()
+    top = [k for k in inv if q_ in f"{k[0]} {k[1]}".lower() or nk(text) in nk(f"{k[0]} {k[1]}")]
+    if not top:
+        await update.message.reply_text("Топилмади. /tozalash ни қайта ёзинг.")
+        return True
+    top = sorted(top, key=lambda k: k[2] or "", reverse=True)[:12]
+    ctx.user_data["toz_top"] = [list(k) for k in top]
+    rows = [[InlineKeyboardButton(f"{k[0]} · {k[1]} · {nazorat._dmy(k[2])} ({len(inv[k])} та)", callback_data=f"rs_f:{i}")] for i, k in enumerate(top)]
+    rows.append([InlineKeyboardButton("❌ Бекор", callback_data="rs_no")])
+    await update.message.reply_text("Қайси фактурани ўчирамиз?", reply_markup=InlineKeyboardMarkup(rows))
+    return True
 
 
 @need("hisobot")
