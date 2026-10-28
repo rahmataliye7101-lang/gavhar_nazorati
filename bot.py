@@ -648,14 +648,14 @@ async def confirm_transh(update: Update, ctx, p):
                 eski = bool(eng_yangi and p["sana"] and p["sana"] < eng_yangi)
                 cfg["transhlar"].append({"no": no, "sana": p["sana"], "summa_usd": p["summa"], "birja_999": p["birja"],
                                          "narxlar": p["narxlar"], "manba": f"Telegram бот, {dt.date.today()}", "yopilgan_sana": None,
-                                         "faqat_tekshiruv": eski})
+                                         "faqat_tekshiruv": False})
                 cfg["transhlar"].sort(key=lambda t: t["no"])
                 undo, head = f"tr_undo:trnew:{no}:0", f"💳 Янги транш №{no} қўшилди\n📅 {sana} · 💵 {p['summa']:,.0f} $ · биржа {p['birja']}"
                 body = "\n".join(notes)
                 if eski:
-                    body += (f"\n\n📅 Бу пул санаси охирги пулдан ({nazorat._dmy(eng_yangi)}) эски — шунинг учун у ФАҚАТ ЭСКИ ПРИХОД "
-                             "ТЕКШИРУВИ учун сақланди, кундалик навбатга қўшилмади. Навбатга қўшиш керак бўлса — пастдаги тугма.")
-                    kb2 = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Кундалик навбатга қўшиш", callback_data=f"tr_navbat:{no}:1")],
+                    body += (f"\n\n📅 Бу пул санаси охирги пулдан ({nazorat._dmy(eng_yangi)}) эски — навбатда санаси бўйича ОЛДИНГА "
+                             "турди (эски пул биринчи ишлатилади). Агар у фақат ўтган ойлар приходини текшириш учун бўлса — пастдаги тугмани босинг.")
+                    kb2 = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Фақат эски приход текшируви учун", callback_data=f"tr_navbat:{no}:0")],
                                                 [InlineKeyboardButton("↩️ Бекор қилиш", callback_data=undo)]])
         save_cfg(cfg)
     kb = locals().get("kb2") or InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Бекор қилиш", callback_data=undo)]])

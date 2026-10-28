@@ -529,9 +529,9 @@ async function loadTransh() {
     el.innerHTML = `
     <button class="btn" id="newbtn">+ Yangi transh (pul berildi)</button>
     <div id="newform"></div>
-    <div class="sec">Transhlar · tepadagi birinchi ishlatiladi</div>
+    <div class="sec">Transhlar · eng eski pul birinchi ishlatiladi</div>
     <div class="mut" style="font-size:12px;margin:-4px 4px 8px">«Tekshiruvda» belgisini olib tashlasangiz, o'sha pul hisobga umuman kirmaydi — qaysi pul bo'yicha tekshirishni shu bilan tanlaysiz.</div>
-    ${d.transhlar.slice().sort((a, b) => a.no - b.no).map((t, qi) => {
+    ${d.transhlar.slice().sort((a, b) => (a.sana || '').localeCompare(b.sana || '') || a.no - b.no).map((t, qi) => {
       const off = t.faol === false;
       const closed = !!t.yopilgan_sana, cls = off ? 'n' : closed ? 'n' : (t.holat === 'Фаол' ? 'g' : t.holat === 'Тугаган' ? 'n' : 'a');
       const pct = t.summa ? Math.min(100, (t.used || 0) / t.summa * 100) : 0;
@@ -608,7 +608,7 @@ function newForm(prev) {
     } catch (e) { toast(e.message); }
   };
   $('#nsave').onclick = async () => {
-    try { const r = await api('/api/transh', body()); haptic('success'); toast(r.qoshildi ? `Transh №${r.no} ga qo'shildi → ${fmt(r.jami)} $` : r.eski ? `Transh №${r.no} saqlandi — eski sana, faqat tekshiruv uchun (Admin'da o'zgartirish mumkin)` : `Transh №${r.no} saqlandi`); dropSub('newform'); invalidate(); loadTransh(); }
+    try { const r = await api('/api/transh', body()); haptic('success'); toast(r.qoshildi ? `Transh №${r.no} ga qo'shildi → ${fmt(r.jami)} $` : r.eski ? `Transh №${r.no} saqlandi — sanasi eski, navbatda oldinga turdi` : `Transh №${r.no} saqlandi`); dropSub('newform'); invalidate(); loadTransh(); }
     catch (e) { toast(e.message); }
   };
 }

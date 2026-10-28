@@ -542,7 +542,7 @@ async def api_transh_saqla(request):
         eski = bool(eng_yangi and p["sana"] and p["sana"] < eng_yangi)
         cfg["transhlar"].append({"no": no, "sana": p["sana"], "summa_usd": p["summa"], "birja_999": p["birja"],
                                  "narxlar": p["narxlar"], "manba": f"Mini app, {dt.date.today()}", "yopilgan_sana": None,
-                                 "faqat_tekshiruv": eski})
+                                 "faqat_tekshiruv": False})
         cfg["transhlar"].sort(key=lambda t: t["no"])
         B.save_cfg(cfg)
     return web.json_response({"ok": True, "no": no, "eski": eski})
@@ -586,7 +586,7 @@ async def api_sozlama(request):
                navbat=not t.get("faqat_tekshiruv"),
                yopilgan=t.get("yopilgan_sana"), used=r2(st.get(t["no"], {}).get("used")), left=r2(st.get(t["no"], {}).get("left")),
                holat=st.get(t["no"], {}).get("holat") if t.get("faol", True) else "Ўчирилган")
-          for t in sorted(cfg["transhlar"], key=lambda t: t["no"])]
+          for t in sorted(cfg["transhlar"], key=lambda t: (t["sana"], t["no"]))]
     v1 = cfg.get("vozvrat_1") or {}
     vz = s.get("vozvrat") or {}
     vozvrat = [dict(no=1, nomi="Возврат рўйхати (Excel)", n=vz.get("n", 0), summa=r2(vz.get("summa", 0)),

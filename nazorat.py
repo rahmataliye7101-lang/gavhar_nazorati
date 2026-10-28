@@ -487,7 +487,8 @@ def compute(cfg, ledger, returns=None):
         ret.pop("_used", None)
     chegara = cfg.get("chegara_usd_gr", 0.3)
     # навбат: биринчи киритилган (тепадаги) пул биринчи тугайди; ⏸ ўчирилган транш ҳисобга кирмайди
-    tr = sorted([t for t in cfg["transhlar"] if t.get("faol", True) and not t.get("faqat_tekshiruv")], key=lambda t: t["no"])
+    # навбат: энг эски пул биринчи ишлатилади (сана бўйича); ⏸ ўчирилган ва «фақат текширув» пуллари кирмайди
+    tr = sorted([t for t in cfg["transhlar"] if t.get("faol", True) and not t.get("faqat_tekshiruv")], key=lambda t: (t["sana"], t["no"]))
     vq = cfg.get("vozvrat_qismlar") or []  # суммаси ва нарх жадвали билан берилган возврат (рўйхатсиз)
     for q in vq:
         q["_used"], q["_n"] = 0.0, 0
@@ -525,6 +526,8 @@ def compute(cfg, ledger, returns=None):
                     break
                 if ti < start:
                     continue
+                if r["sana"] and t["sana"] > r["sana"]:  # бу пул фактура санасида ҳали берилмаган эди
+                    continue
                 if lf[ti] <= 1e-6:
                     continue
                 ys, yq = t.get("yopilgan_sana"), t.get("yopilgan_qator")
@@ -544,8 +547,8 @@ def compute(cfg, ledger, returns=None):
                     used[ti] += c
                     first_date[ti] = first_date[ti] or r["sana"]
                     last_date[ti] = r["sana"]
-            if rem_g > 1e-9:  # пул етмади — охирги транш нархида
-                t = tr[-1]
+            if rem_g > 1e-9:  # пул етмади — фактура санасигача берилган охирги пул нархида
+                t = next((x for x in reversed(tr) if not r["sana"] or x["sana"] <= r["sana"]), tr[-1])
                 p = t["narxlar"].get(r["tur"]) or t["narxlar"].get("Дорика")
                 cost += rem_g * p
                 parts.append(("пул етмади", rem_g, p))
