@@ -1542,7 +1542,7 @@ def holat_matn(rows, trs, s):
         elif t["holat"] == "Тугаган":
             L.append(f"   {nom} — тугаган")
         else:
-            L.append(f"   {nom} — {str(t['holat']).lower()}")
+            L.append(f"   {nom} — {str(t['holat']).lower()}" + (f", ичида {t['left']:,.0f} $ ишлатилмай қолган ⚠" if t["left"] > 1 else ""))
     inv = {(r["faktura"], r["filial"], r["sana"]) for r in rows}
     if not inv:
         L += ["", "🧾 Ҳали фактура юкланмаган."]

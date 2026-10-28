@@ -285,7 +285,29 @@ async def api_holat(request):
         qismlar=[{k: (r2(v) if isinstance(v, float) else v) for k, v in q.items() if k != "narxlar"} for q in s.get("qismlar", [])],
         oy_pul=oy_pul_json(rows_all, cfg, oy),
         davr=davr,
+        jami_tovar=r2(sum(r["summa"] or 0 for r in rows)),
+        vozvrat_tovar=r2(sum(r["summa"] or 0 for r in rows if r.get("transh") == "возврат")),
+        yetmadi=dict(n=sum(1 for r in rows_all if r.get("pul_yetmadi")),
+                     summa=r2(sum(r["summa"] or 0 for r in rows_all if r.get("pul_yetmadi")))),
+        yopiq_pullar=yopiq_pullar(cfg, trs_all),
     ))
+
+
+def yopiq_pullar(cfg, trs):
+    """Ёпилган / ўчирилган / «фақат текширув» турган, лекин ичида пули қолган траншлар — Holat да огоҳлантириш учун."""
+    st = {t["no"]: t for t in trs}
+    out = []
+    for t in sorted(cfg.get("transhlar", []), key=lambda t: t["sana"]):
+        x = st.get(t["no"], {})
+        sab = ("yopilgan" if t.get("yopilgan_sana") else "ochirilgan" if not t.get("faol", True)
+               else "tekshiruv" if t.get("faqat_tekshiruv") else None)
+        if not sab:
+            continue
+        left = x.get("left", t["summa_usd"]) if x else t["summa_usd"]
+        if left > 1:
+            out.append(dict(no=t["no"], sana=t["sana"], summa=t["summa_usd"], used=r2(x.get("used", 0) if x else 0),
+                            left=r2(left), sabab=sab, yopilgan=t.get("yopilgan_sana")))
+    return out
 
 
 def oy_pul_json(rows, cfg, oy):

@@ -209,6 +209,14 @@ async function loadHolat() {
       ${open.map(t => `<div class="bar"><i style="width:${Math.max(1, Math.min(100, t.pct))}%"></i></div>
         <div class="rw mut"><span>№${t.no} · ishlatilgan ${usd(t.used)}</span><span>${fmt(t.pct, 1)}%</span></div>`).join('')}
     </div>
+    ${(d.yopiq_pullar || []).length && d.yetmadi && d.yetmadi.n ? `<div class="card alert">
+      <b style="font-size:14px">⚠ Pul hisobga olinmayapti</b>
+      <div class="mut" style="margin-top:4px">${fmt(d.yetmadi.n)} ta tovar (${usd(d.yetmadi.summa)}) uchun pul yetmadi — ular puldan ayirilmadi.
+        Shu bilan birga quyidagi pulda hali pul bor, lekin u hisobdan chiqarilgan:</div>
+      ${d.yopiq_pullar.map(t => `<div class="rw" style="margin-top:8px;gap:8px">
+        <span><b>№${t.no} · ${dmy(t.sana)}</b> — qolgan ${usd(t.left)}<br><span class="mut">${t.sabab === 'yopilgan' ? 'Yopilgan ' + dmy(t.yopilgan) : t.sabab === 'ochirilgan' ? 'Tekshiruvdan o\'chirilgan' : 'Faqat eski prixod uchun'}</span></span>
+        <button class="btn2" onclick="pulOch(${t.no}, '${t.sabab}')">Qayta ochish</button></div>`).join('')}
+    </div>` : ''}
     ${o ? `<div class="card ${o.bad ? 'alert' : ''} inv" onclick="openFaktura('${esc(o.key)}', ${o.transh || 0})">
       <div class="rw"><b style="font-size:14px">${o.bad ? (o.farq > 0 ? '⚠ Oxirgi faktura qimmat' : '⚠ Oxirgi fakturada farq bor') : '✓ Oxirgi faktura to\'g\'ri'}</b>
         <b class="${o.farq > 0 && o.bad ? 'red' : ''}" style="white-space:nowrap">${o.bad ? sgn(o.farq) + ' $' : ''}</b></div>
@@ -216,7 +224,8 @@ async function loadHolat() {
     </div>` : ''}
     <div class="g2">
       <div class="card"><div class="lb">Jami berilgan</div><div class="v">${usd(d.given)}</div></div>
-      <div class="card"><div class="lb">Olingan tovar</div><div class="v">${usd(d.used)}</div></div>
+      <div class="card"><div class="lb">Puldan olingan tovar</div><div class="v">${usd(d.used)}</div>
+        <div class="mut">Jami tovar ${usd(d.jami_tovar)}${d.vozvrat_tovar ? ' · vozvrat ' + usd(d.vozvrat_tovar) : ''}</div></div>
       <div class="card"><div class="lb">Fakturalar</div><div class="v">${fmt(d.faktura_soni)}</div></div>
       <div class="card"><div class="lb">Jami farq</div><div class="v ${d.farq > 0 ? 'red' : ''}">${sgn(d.farq, 0)} $</div></div>
       <div class="card"><div class="lb">O'rtacha kunlik sarf</div><div class="v">${usd(d.temp)}</div></div>
@@ -578,7 +587,7 @@ async function loadTransh() {
         <div class="mut" style="margin-top:6px">1 gr = lom (birja ${t.birja} × 585/999) + ishchilik + QQS</div>
         <div class="rw tract" style="margin-top:12px;justify-content:flex-start;gap:6px;flex-wrap:wrap">
           ${closed ? `<button class="btn2" onclick="yop(${t.no}, null)">Qayta ochish</button>`
-                   : `<button class="btn2" onclick="yop(${t.no}, '${today}')">Transhni yopish</button>`}
+                   : `<button class="btn2" onclick="yop(${t.no}, '${today}', ${t.left || 0})">Transhni yopish</button>`}
           <button class="btn2" onclick="trEdit(${t.no})">✏️ Tahrirlash</button>
           <button class="btn2" style="color:var(--red)" onclick="trDel(${t.no}, '${dmy(t.sana)}', ${t.summa})">🗑 O'chirish</button>
         </div>
@@ -632,8 +641,18 @@ async function vqYop(no, y) {
   try { await api('/api/vozvrat/yop', {no, yop: y}); haptic('success'); toast(y ? 'Yakunlandi' : 'Ochildi'); invalidate(); loadHolat(); }
   catch (e) { toast(e.message); }
 }
-async function yop(no, sana) {
-  const msg = sana ? `Transh №${no} ni yopaymi? Endi yangi fakturalar faqat joriy (keyingi) transh narxida tekshiriladi. Oldin tekshirilganlar o'zgarmaydi.` : `Transh №${no} ni qayta ochaymi?`;
+async function pulOch(no, sabab) {
+  const msg = `Transh №${no} ni qayta ochaymi? Hamma fakturalar shu pul bilan qayta hisoblanadi.`;
+  const go = await new Promise(res => tg && tg.showConfirm && tg.initData ? tg.showConfirm(msg, res) : res(confirm(msg)));
+  if (!go) return;
+  try {
+    if (sabab === 'yopilgan') await api('/api/transh/yop', {no, sana: null});
+    else await api('/api/transh/faol', sabab === 'ochirilgan' ? {no, faol: true} : {no, navbat: true});
+    haptic('success'); toast('Ochildi — qayta hisoblandi'); invalidate(); loadHolat();
+  } catch (e) { toast(e.message); }
+}
+async function yop(no, sana, left) {
+  const msg = sana ? (left > 1 ? `Diqqat: Transh №${no} da hali ${fmt(left)} $ qolgan! Yopsangiz shu pul hisobdan chiqadi va oldingi sanadagi fakturalarga pul yetmay qoladi. ` : '') + `Transh №${no} ni yopaymi? Endi yangi fakturalar faqat joriy (keyingi) transh narxida tekshiriladi. Oldin tekshirilganlar o'zgarmaydi.` : `Transh №${no} ni qayta ochaymi?`;
   const go = await new Promise(res => tg && tg.showConfirm && tg.initData ? tg.showConfirm(msg, res) : res(confirm(msg)));
   if (!go) return;
   try { await api('/api/transh/yop', {no, sana}); haptic('success'); toast(sana ? 'Yopildi — endi joriy transh ishlaydi' : 'Ochildi'); invalidate(); loadTransh(); }
