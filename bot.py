@@ -27,7 +27,7 @@ logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=loggin
 log = logging.getLogger("gavhar-bot")
 
 BASE = Path(__file__).resolve().parent
-DATA = Path(os.environ.get("DATA_DIR", "/data"))
+DATA = Path(os.environ.get("DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or "/data")  # Volume қаерга уланса ўша ер
 TRANSH = DATA / "transhlar.json"
 LEDGER = DATA / "ledger.csv"
 VOZVRAT = DATA / "vozvrat.csv"
@@ -499,6 +499,11 @@ async def run_and_reply(update: Update, files=(), caption="Ҳисобот", umum
             for fp in sorted(Path(td).glob("Faktura_*.xlsx")):  # ҳар бир янги фактура (дўкон) бўйича алоҳида текширув
                 with open(fp, "rb") as f:
                     await msg.reply_document(f, filename=fp.name, caption="📑 Батафсил — " + fp.stem[8:].replace("_", " "))
+            jp = Path(td) / "Fakturalar_jami.xlsx"
+            if jp.exists():
+                with open(jp, "rb") as f:
+                    await msg.reply_document(f, filename=f"Fakturalar_jami_{dt.date.today():%Y-%m-%d}.xlsx",
+                                             caption="📑 Ҳамма фактура ва SKU — битта файлда")
             if umumiy:
                 with open(out, "rb") as f:
                     await msg.reply_document(f, filename=out.name, caption="📑 Умумий ҳисобот")
@@ -639,13 +644,21 @@ async def confirm_transh(update: Update, ctx, p):
                 body = "Нархлар ўзгармади (ўша транш нархлари)."
             else:
                 no = max((t["no"] for t in cfg["transhlar"]), default=0) + 1
+                eng_yangi = max((t["sana"] for t in cfg["transhlar"] if not t.get("faqat_tekshiruv")), default="")
+                eski = bool(eng_yangi and p["sana"] and p["sana"] < eng_yangi)
                 cfg["transhlar"].append({"no": no, "sana": p["sana"], "summa_usd": p["summa"], "birja_999": p["birja"],
-                                         "narxlar": p["narxlar"], "manba": f"Telegram бот, {dt.date.today()}", "yopilgan_sana": None})
+                                         "narxlar": p["narxlar"], "manba": f"Telegram бот, {dt.date.today()}", "yopilgan_sana": None,
+                                         "faqat_tekshiruv": eski})
                 cfg["transhlar"].sort(key=lambda t: t["no"])
                 undo, head = f"tr_undo:trnew:{no}:0", f"💳 Янги транш №{no} қўшилди\n📅 {sana} · 💵 {p['summa']:,.0f} $ · биржа {p['birja']}"
                 body = "\n".join(notes)
+                if eski:
+                    body += (f"\n\n📅 Бу пул санаси охирги пулдан ({nazorat._dmy(eng_yangi)}) эски — шунинг учун у ФАҚАТ ЭСКИ ПРИХОД "
+                             "ТЕКШИРУВИ учун сақланди, кундалик навбатга қўшилмади. Навбатга қўшиш керак бўлса — пастдаги тугма.")
+                    kb2 = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Кундалик навбатга қўшиш", callback_data=f"tr_navbat:{no}:1")],
+                                                [InlineKeyboardButton("↩️ Бекор қилиш", callback_data=undo)]])
         save_cfg(cfg)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Бекор қилиш", callback_data=undo)]])
+    kb = locals().get("kb2") or InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Бекор қилиш", callback_data=undo)]])
     await update.effective_message.reply_text(f"✅ {head}\n{body}", reply_markup=kb)
     await run_and_reply(update)
 
@@ -760,6 +773,16 @@ async def transh_cb(update: Update, ctx):
     await q.answer()
     if not has_perm(update.effective_user.id, "transh_qoshish"):
         return await q.edit_message_text("⛔ Сизда транш қўшиш рухсати йўқ.")
+    if q.data.startswith("tr_navbat:"):
+        _, no, v = q.data.split(":")
+        async with LOCK:
+            cfg = load_cfg()
+            t = next((t for t in cfg["transhlar"] if t["no"] == int(no)), None)
+            if t:
+                t["faqat_tekshiruv"] = v != "1"
+                save_cfg(cfg)
+        await q.edit_message_text(q.message.text + ("\n\n💳 Кундалик навбатга қўшилди." if v == "1" else "\n\n📅 Фақат текширув учун."))
+        return await run_and_reply(update)
     if q.data.startswith("tr_undo:"):
         _, kind, no, amt = q.data.split(":")
         no, amt = int(no), float(amt)
@@ -867,12 +890,43 @@ async def vozvrat_och(update: Update, ctx):
     await update.message.reply_text(err or f"🔓 Возврат {a[0]}-қисм қайта очилди.")
 
 
+async def _pul_faol(update, ctx, faol):
+    a = ctx.args
+    if not a or not a[0].isdigit():
+        cfg = load_cfg()
+        lst = "\n".join(f"   №{t['no']} ({nazorat._dmy(t['sana'])}) — {'✅ текширувда' if t.get('faol', True) else '⏸ ўчирилган'}"
+                        for t in cfg["transhlar"]) or "   йўқ"
+        return await update.message.reply_text(f"Мисол: /pul_ochir 1 ёки /pul_yoq 1\nПуллар:\n{lst}")
+    async with LOCK:
+        cfg = load_cfg()
+        t = next((t for t in cfg["transhlar"] if t["no"] == int(a[0])), None)
+        if not t:
+            return await update.message.reply_text("Бундай транш йўқ.")
+        t["faol"] = faol
+        save_cfg(cfg)
+    await update.message.reply_text(
+        f"{'✅' if faol else '⏸'} Транш №{a[0]} ({nazorat._dmy(t['sana'])}) текширувдан {'ёқилди' if faol else 'ўчирилди'}.\n"
+        + ("Энди у навбатда ва нарх текширишда қатнашади." if faol else "Энди у на навбатда, на нарх текширишда ҳисобга олинмайди."))
+    await run_and_reply(update)
+
+
+@need("transh_qoshish")
+async def pul_ochir(update: Update, ctx):
+    await _pul_faol(update, ctx, False)
+
+
+@need("transh_qoshish")
+async def pul_yoq(update: Update, ctx):
+    await _pul_faol(update, ctx, True)
+
+
 @need("faktura_yuklash")
 async def oylik(update: Update, ctx):
     ctx.user_data["oylik_mode"] = True
     await update.message.reply_text(
-        "📅 Ойлик приход файлини (Excel) ташланг.\n"
-        "Бот ҳамма товарни 1, 2-пул ва возвратлар бўйича қайта текшириб, ойлик хулоса беради. Реестр ўзгармайди.")
+        "🔎 Текшириладиган файлни (ойлик / 15 кунлик приход ёки эски фактура) ташланг.\n"
+        "Бот ҳар товарни санасига ва нархига қараб ўзи текширади: ёқилган пуллар → возвратлар → бошқа пуллар. "
+        "Реестрга қўшилмайди, пул айирилмайди.")
 
 
 async def handle_oylik_file(update: Update, path):
@@ -1066,7 +1120,7 @@ async def document(update: Update, ctx):
         await f.download_to_drive(path)
         uid = update.effective_user.id
         cap = (update.message.caption or "").lower()
-        if ctx.user_data.pop("oylik_mode", False) or re.search(r"ойлик|oylik|ойлик приход", cap):
+        if ctx.user_data.pop("oylik_mode", False) or re.search(r"ойлик|oylik|текшир|tekshir", cap):
             if not has_perm(uid, "faktura_yuklash"):
                 return await update.message.reply_text(f"⛔ Сизда рухсат йўқ: {PERMS['faktura_yuklash']}.")
             return await handle_oylik_file(update, path)
@@ -1090,6 +1144,13 @@ async def document(update: Update, ctx):
             invs = {(r.get("faktura"), r.get("filial")) for r in rows}
             ds = sorted({r.get("sana") for r in rows if r.get("sana")})
             span = (dt.date.fromisoformat(ds[-1]) - dt.date.fromisoformat(ds[0])).days if ds else 0
+            eski = nazorat.eski_faktura(load_cfg(), rows)
+            if eski:  # кундалик пуллардан олдинги сана — эски фактура: фақат текширамиз
+                bk.unlink(missing_ok=True)
+                await update.message.reply_text(
+                    f"📅 Бу фактура санаси ({nazorat._dmy(eski)}) кундалик пуллардан олдин — эски фактура.\n"
+                    "Реестрга ҚЎШМАЙМАН ва ҳозирги пулдан айирмайман — ўша давр пуллари ва возвратлар бўйича текшираман.")
+                return await handle_oylik_file(update, path)
             if len(invs) > 5 or span > 3:  # кўп фактура / узоқ давр — бу ойлик (15 кунлик) приход, реестрга қўшмаймиз
                 bk.unlink(missing_ok=True)
                 await update.message.reply_text(
@@ -1100,11 +1161,47 @@ async def document(update: Update, ctx):
             return await update.message.reply_text(
                 "❌ Бу файлда фактура топилмади.\n"
                 "Возврат рўйхати бўлса — аввал /vozvrat ёзинг, кейин файлни ташланг.")
-        await run_and_reply(update, files=[str(path)], caption=f"Ҳисобот — {name}")
+        # бир нечта фактура кетма-кет ташланса — 4 сония кутиб, ҲАММАСИНИ БИРГА текширамиз (битта жавоб)
+        chat = update.effective_chat.id
+        b = BATCH.get(chat)
+        if b is None:
+            b = BATCH[chat] = {"dir": tempfile.mkdtemp(), "files": [], "bk": bk, "task": None}
+        else:
+            bk.unlink(missing_ok=True)  # реестр ҳали ўзгармаган — биринчи нусха етарли
+        dst = Path(b["dir"]) / f"{len(b['files']):03d}_{name}"
+        shutil.copy(path, dst)
+        b["files"].append(str(dst))
+        b["update"] = update
+        if b["task"]:
+            b["task"].cancel()
+        b["task"] = asyncio.create_task(_batch_run(chat))
+
+
+BATCH = {}
+
+
+async def _batch_run(chat):
+    try:
+        await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        return
+    b = BATCH.pop(chat, None)
+    if not b:
+        return
+    update, files, bk = b["update"], b["files"], b["bk"]
+    try:
+        if len(files) > 1:
+            await update.effective_message.reply_text(f"📥 {len(files)} та файл қабул қилинди — ҳаммасини бирга текширяпман…")
+        await run_and_reply(update, files=files, caption="Ҳисобот")
         if filecmp.cmp(bk, LEDGER, shallow=False):
             bk.unlink()  # ҳеч нарса қўшилмади — бекор қилиш нуқтаси ўзгармайди
         else:
             (DATA / "last_backup.txt").write_text(str(bk))
+    except Exception:
+        log.exception("batch")
+        await update.effective_message.reply_text("❌ Текширишда хато чиқди. Файлларни қайта ташлаб кўринг.")
+    finally:
+        shutil.rmtree(b["dir"], ignore_errors=True)
 
 
 @admin_only

@@ -294,11 +294,12 @@ function upCard() {
     <div class="mut" style="font-size:12px;margin-top:4px">Faktura, oylik / 15 kunlik prixod yoki vozvrat ro'yxati. Turini o'zi aniqlaydi.</div>
     <select id="uptur" style="width:100%;margin-top:8px;padding:8px">
       <option value="auto">Avto aniqlash</option>
-      <option value="faktura">Faktura (reyestrga qo'shiladi)</option>
-      <option value="oylik">Oylik / 15 kunlik prixod (faqat tekshiruv)</option>
+      <option value="faktura">Kundalik faktura — reyestrga qo'shiladi, pul navbat bo'yicha</option>
+      <option value="oylik">🔎 Faqat tekshirish — oylik, 15 kunlik yoki eski faktura (sana va narx bo'yicha o'zi topadi)</option>
       <option value="vozvrat">Vozvrat ro'yxati (+/−)</option>
     </select>
-    <input type="file" id="upf" accept=".xlsx,.xlsm" style="margin-top:8px;width:100%">
+    <input type="file" id="upf" accept=".xlsx,.xlsm" multiple style="margin-top:8px;width:100%">
+    <div class="mut" style="font-size:12px;margin-top:4px">Bir nechta faktura bo'lsa — hammasini birdan tanlang (100 ta ham bo'ladi), bitta javob keladi.</div>
     <button class="btn" id="upb" style="margin-top:8px">Yuklash</button>
     <div id="upst" class="mut" style="margin-top:6px"></div>
     ${UPRES ? `<div class="upres">${E(L(UPRES))}</div>` : ''}
@@ -306,11 +307,11 @@ function upCard() {
 }
 function bindUp() { const b = $('#upb'); if (b) b.onclick = () => doUp(); }
 function doUp(mode) {
-  const inp = $('#upf'), f = (inp && inp.files[0]) || UPFILE;
-  if (!f) return toast('Fayl tanlang');
-  UPFILE = f;
+  const inp = $('#upf'), fs = (inp && inp.files.length) ? [...inp.files] : (UPFILE || []);
+  if (!fs.length) return toast('Fayl tanlang');
+  UPFILE = fs;
   const fd = new FormData();
-  fd.append('tur', $('#uptur').value); if (mode) fd.append('mode', mode); fd.append('file', f);
+  fd.append('tur', $('#uptur').value); if (mode) fd.append('mode', mode); fs.forEach(f => fd.append('file', f));
   const x = new XMLHttpRequest();
   x.open('POST', '/api/yuklash'); x.setRequestHeader('X-Init-Data', tg ? tg.initData : '');
   const st = $('#upst');
@@ -331,6 +332,12 @@ function doUp(mode) {
   st.textContent = 'Yuklanmoqda…'; x.send(fd);
 }
 
+async function fakExcel(key, btn) {
+  btn.disabled = true; const t = btn.textContent; btn.textContent = 'Yuborilmoqda…';
+  try { await api('/api/faktura/excel', {key}); haptic('success'); toast('Excel chatga yuborildi'); }
+  catch (e) { toast(e.message); }
+  finally { btn.disabled = false; btn.textContent = t; }
+}
 async function loadFaktura() {
   const el = $('#p-faktura');
   try { await ensureFO(); FD = await api('/api/fakturalar' + qs()); if (FSel == null || (FSel !== 'all' && !FD.groups.some(g => g.no === FSel))) FSel = 'all'; renderFaktura(); }
@@ -430,6 +437,7 @@ function invCard(a) {
               : `<div class="mut" style="font-size:12px;margin-top:3px">${E(L((vs[0].manba.match(/\(([^)]*)\)/) || [, ''])[1]))}</div>`
                 + Object.values(vs.reduce((m, v) => { const k = v.tur; (m[k] = m[k] || {tur: v.tur, n: 0, g: 0, narx: v.narx}); m[k].n++; m[k].g += v.gramm || 0; return m; }, {}))
                   .sort((a, b) => b.g - a.g).map(t => `<div class="mut" style="font-size:12px;margin-top:3px">• ${L(t.tur)}: ${t.n} ta · ${fmt(t.g, 2)} gr × ${fmt(t.narx, 2)} $ — vozvrat narxiga mos</div>`).join('')}</div>`; }).join('')}` : ''}
+      ${can('hisobot') ? `<button class="btn2" style="width:100%;margin-top:10px;padding:10px" onclick="fakExcel('${esc(a.key)}', this)">📑 To'liq Excel — hamma SKU (to'g'ri / xato va nima bo'yicha)</button>` : ''}
       <div class="rw" style="margin-top:8px"><span class="mut">Hisob bo'yicha ${usd(a.hisob, 2)}</span>
         ${a.bad ? `<span class="rw" style="gap:6px">${can('hisobot') ? `<button class="btn2" onclick="xatoExcel({faktura:'${esc(a.faktura)}'}, this)">📑 Excel</button>` : ''}
           <button class="btn2" onclick="xatoByFaktura('${esc(a.faktura)}')">${a.bad} ta xatolik ›</button></span>` : ''}</div>
@@ -493,17 +501,20 @@ function listXato() {
   $('#xs').textContent = `${rs.length} pozitsiya · farq ${sgn(sum)} $`;
   $('#xl').innerHTML = rs.length ? rs.slice(0, 300).map(r => {
     const cheap = r.holat.includes('арзон');
-    const turL = /занжир/i.test(r.kategoriya || '') ? 'Zanjir · Dorika narxi' : /билак|браслет/i.test(r.kategoriya || '') ? 'Bilak uzuk · Braslet narxi' : L(r.tur);
     const col = cheap ? 'var(--amb)' : 'var(--red)';
+    const xt = L((r.xato_turi || '').replace(/^(Қиммат|Арзон): /, ''));
     return `<div class="card err ${cheap ? 'cheap' : ''}">
       <div class="rw"><b style="font-size:15px">${E(r.filial)}</b><span class="mut">${dmy(r.sana)}</span></div>
-      <div class="mut">${esc(turL)} · ${fmt(r.gramm, 2)} gr · art. ${E(r.kod)} · ${E(r.faktura)}</div>
+      <div class="mut" style="font-size:12px">${E(r.faktura)} · art. ${E(r.kod)}</div>
+      <div style="margin-top:8px;font-size:14px"><b>${E(L(r.kategoriya || '—'))}</b> · ${fmt(r.gramm, 2)} gr · <span class="mut">narxi: ${E(L(r.tur))}</span></div>
+      <div style="margin-top:6px;display:inline-block;background:${cheap ? 'var(--amb-bg)' : 'var(--red-bg)'};color:${col};border-radius:8px;padding:4px 10px;font-size:13px;font-weight:600">
+        ❗ ${cheap ? 'Arzon' : 'Qimmat'}: ${E(xt || 'narx to\'g\'ri kelmadi')}</div>
       <div class="g2" style="margin-top:10px">
         <div style="background:var(--bg);border-radius:10px;padding:8px 10px"><div class="lb">Fakturada</div><div style="font-size:17px;font-weight:700;color:${col}">${fmt(r.fakt_1gr, 2)} $/gr</div></div>
         <div style="background:var(--grn-bg);border-radius:10px;padding:8px 10px"><div class="lb">To'g'ri narx</div><div style="font-size:17px;font-weight:700;color:var(--grn)">${fmt(r.hisob_1gr, 2)} $/gr</div></div>
       </div>
       <div style="margin-top:10px;font-weight:700;color:${col}">1 grammiga ${fmt(Math.abs(r.farq_gr), 2)} $ ${cheap ? 'arzon' : 'qimmat'} → jami ${fmt(Math.abs(r.farq), 2)} $ ${cheap ? 'kam yozilgan' : 'ortiqcha'}</div>
-      ${r.izoh ? `<div class="sm mut" style="margin-top:4px">${E(r.izoh)}</div>` : ''}
+      ${r.izoh ? `<div class="mut" style="margin-top:4px;font-size:12px">${E(r.izoh)}</div>` : ''}
     </div>`;
   }).join('') + (rs.length > 300 ? `<div class="mut" style="text-align:center">Birinchi 300 tasi ko'rsatildi</div>` : '')
     : `<div class="card empty">Farq yo'q 👍</div>`;
@@ -519,12 +530,15 @@ async function loadTransh() {
     <button class="btn" id="newbtn">+ Yangi transh (pul berildi)</button>
     <div id="newform"></div>
     <div class="sec">Transhlar · tepadagi birinchi ishlatiladi</div>
+    <div class="mut" style="font-size:12px;margin:-4px 4px 8px">«Tekshiruvda» belgisini olib tashlasangiz, o'sha pul hisobga umuman kirmaydi — qaysi pul bo'yicha tekshirishni shu bilan tanlaysiz.</div>
     ${d.transhlar.slice().sort((a, b) => a.no - b.no).map((t, qi) => {
-      const closed = !!t.yopilgan_sana, cls = closed ? 'n' : (t.holat === 'Фаол' ? 'g' : t.holat === 'Тугаган' ? 'n' : 'a');
+      const off = t.faol === false;
+      const closed = !!t.yopilgan_sana, cls = off ? 'n' : closed ? 'n' : (t.holat === 'Фаол' ? 'g' : t.holat === 'Тугаган' ? 'n' : 'a');
       const pct = t.summa ? Math.min(100, (t.used || 0) / t.summa * 100) : 0;
-      return `<div class="card">
-        <div class="mut" style="font-size:12px;margin-bottom:2px">${qi + 1}-navbat${qi === 0 ? ' · birinchi tugaydi' : ''}</div>
-        <div class="rw"><b>Transh №${t.no} · ${dmy(t.sana)}</b><span class="bd ${cls}">${closed ? 'Yopilgan ' + dm(t.yopilgan_sana) : holatL(t.holat)}</span></div>
+      return `<div class="card" style="${off ? 'opacity:.6' : ''}">
+        <div class="rw"><span class="mut" style="font-size:12px">${off ? '⏸ tekshiruvdan o\'chirilgan' : t.navbat === false ? '📅 faqat eski prixod tekshiruvi uchun' : (qi + 1) + '-navbat' + (qi === 0 ? ' · birinchi tugaydi' : '')}</span>
+          ${can('transh_qoshish') ? `<label class="rw" style="gap:6px;font-size:12px;cursor:pointer"><input type="checkbox" ${off ? '' : 'checked'} onchange="trFaol(${t.no}, this.checked)" style="width:18px;height:18px">Tekshiruvda</label>` : ''}</div>
+        <div class="rw"><b>Transh №${t.no} · ${dmy(t.sana)}</b><span class="bd ${cls}">${off ? 'O\'chirilgan' : t.navbat === false ? '📅 Eski oy' : closed ? 'Yopilgan ' + dm(t.yopilgan_sana) : holatL(t.holat)}</span></div>
         <div class="mut">${usd(t.summa)} · birja ${t.birja} · lom ${fmt(t.lom, 2)}</div>
         <div class="bar"><i style="width:${Math.max(1, pct)}%"></i></div>
         <div class="rw mut"><span>ishlatilgan ${usd(t.used)}</span><span>qoldiq ${usd(t.left)}</span></div>
@@ -549,6 +563,10 @@ async function loadTransh() {
     }
     $('#chegb').onclick = async () => { try { await api('/api/chegara', {v: $('#cheg').value}); haptic('success'); toast('Saqlandi'); invalidate(); } catch (e) { toast(e.message); } };
   } catch (e) { fail(el, e); }
+}
+async function trFaol(no, faol) {
+  try { await api('/api/transh/faol', {no, faol}); haptic('success'); toast(faol ? `Transh №${no} tekshiruvga yoqildi` : `Transh №${no} tekshiruvdan o'chirildi`); invalidate(); loadTransh(); }
+  catch (e) { toast(e.message); }
 }
 async function vqYop(no, y) {
   const msg = y ? `Vozvrat ${no}-qismni yakunlaymi? Endi yangi fakturalar pullar va vozvrat ro'yxati (1-qism) bo'yicha tekshiriladi.` : `Vozvrat ${no}-qismni qayta ochaymi?`;
@@ -590,7 +608,7 @@ function newForm(prev) {
     } catch (e) { toast(e.message); }
   };
   $('#nsave').onclick = async () => {
-    try { const r = await api('/api/transh', body()); haptic('success'); toast(r.qoshildi ? `Transh №${r.no} ga qo'shildi → ${fmt(r.jami)} $` : `Transh №${r.no} saqlandi`); dropSub('newform'); invalidate(); loadTransh(); }
+    try { const r = await api('/api/transh', body()); haptic('success'); toast(r.qoshildi ? `Transh №${r.no} ga qo'shildi → ${fmt(r.jami)} $` : r.eski ? `Transh №${r.no} saqlandi — eski sana, faqat tekshiruv uchun (Admin'da o'zgartirish mumkin)` : `Transh №${r.no} saqlandi`); dropSub('newform'); invalidate(); loadTransh(); }
     catch (e) { toast(e.message); }
   };
 }
@@ -615,7 +633,8 @@ async function loadAdmin(d) {
     d = d || await api('/api/admin');
     ADM = d;
     badge(d.pending.length);
-    el.innerHTML = `
+    try { SOZ = await api('/api/sozlama'); } catch (e) { SOZ = null; }
+    el.innerHTML = sozlamaHtml() + `
     <div class="sec">So'rovlar${d.pending.length ? ` · ${d.pending.length} ta` : ''}</div>
     ${d.pending.length ? d.pending.map(p => `<div class="card alert">
         <div class="rw"><b>${esc(p.name) || 'Noma\'lum'}</b><span class="mut">ID ${p.id}</span></div>
@@ -646,7 +665,47 @@ async function loadAdmin(d) {
 `;
   } catch (e) { fail(el, e); }
 }
-let PERM_OPEN = null, ADM = null;
+let PERM_OPEN = null, ADM = null, SOZ = null, VQFORM = false;
+/* ---------- TEKSHIRUV SOZLAMASI: qaysi pullar va vozvratlar ishlatiladi ---------- */
+function sozlamaHtml() {
+  if (!SOZ) return '';
+  const row = (chk, on, title, sub, badge) => `<label class="rw" style="justify-content:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer;${on ? '' : 'opacity:.55'}">
+      <input type="checkbox" ${on ? 'checked' : ''} onchange="${chk}" style="width:20px;height:20px;flex:none">
+      <div style="flex:1;min-width:0"><div class="rw"><b style="font-size:14px">${title}</b>${badge || ''}</div><div class="mut" style="font-size:12px">${sub}</div></div></label>`;
+  return `<div class="sec">Tekshiruv sozlamasi</div>
+    <div class="card">
+      <div class="mut" style="font-size:12px;margin-bottom:4px">Belgilanganlari bo'yicha tekshiriladi. Belgini olsangiz — o'sha pul yoki vozvrat hisobga kirmaydi.</div>
+      <div class="sm" style="font-weight:600;margin-top:8px">💳 Pullar (transhlar) · ${SOZ.transhlar.length} ta</div>
+      ${SOZ.transhlar.length ? SOZ.transhlar.map((t, i) => row(`sozTr(${t.no}, this.checked)`, t.faol, `№${t.no} · ${dmy(t.sana)} · ${usd(t.summa)}`,
+          (t.navbat ? `birja ${t.birja} · ishlatilgan ${usd(t.used)} · qoldiq ${usd(t.left)}`
+                    : `📅 faqat eski prixod tekshiruvi uchun · birja ${t.birja}`) +
+          ` · <a href="#" onclick="event.preventDefault();sozNav(${t.no}, ${!t.navbat})">${t.navbat ? 'faqat tekshiruvga' : 'kundalik navbatga qo\'shish'}</a>`,
+          `<span class="bd ${!t.faol ? 'n' : !t.navbat ? 'a' : (t.holat === 'Фаол' ? 'g' : 'a')}">${!t.faol ? "O'chirilgan" : !t.navbat ? '📅 Eski oy' : (t.yopilgan ? 'Yopilgan' : holatL(t.holat))}</span>`)).join('')
+        : '<div class="mut" style="padding:8px 0">Hali pul kiritilmagan</div>'}
+      <button class="btn2" style="width:100%;padding:11px;margin-top:10px" onclick="sozNewTr()">➕ Yangi pul (transh) kiritish</button>
+      <div class="sm" style="font-weight:600;margin-top:16px">↩️ Vozvratlar · ${SOZ.vozvrat.length} ta</div>
+      ${SOZ.vozvrat.map(v => row(`sozVz(${v.no}, this.checked)`, v.faol, `${v.no}-qism · ${L(v.nomi)}`,
+          (v.no === 1 ? `${fmt(v.n)} ta tovar · ` : '') + `${usd(v.summa)} · berilgan ${usd(v.berilgan)} · qoldi ${usd(v.qolgan)}`,
+          v.yopilgan ? `<span class="bd n">Yakunlangan</span>` : '')).join('')}
+      <button class="btn2" style="width:100%;padding:11px;margin-top:10px" onclick="VQFORM=!VQFORM;loadAdmin(ADM)">➕ Yangi vozvrat (summa va narxlar bo'yicha)</button>
+      ${VQFORM ? `<div style="background:var(--bg);border-radius:12px;padding:10px 12px;margin-top:8px">
+        <div class="g2"><div><label class="f">Summa, $</label><input id="vqs" inputmode="decimal" placeholder="208422"></div>
+          <div><label class="f">Birja (tillo) narxi</label><input id="vqb" inputmode="decimal" placeholder="149.94"></div></div>
+        <label class="f" style="margin-top:10px">1 gr narxlari, $</label>
+        <div class="g2">${TYPES.map(t => `<div><label class="f" style="margin-top:2px">${t === 'Вакс' ? "Vaks / ko'zsiz" : L(t)}</label><input class="vqp" data-t="${t}" inputmode="decimal"></div>`).join('')}</div>
+        <button class="btn" style="margin-top:10px" onclick="sozVqSave()">Saqlash</button></div>` : ''}
+      <div class="mut" style="font-size:12px;margin-top:10px">Vozvrat ro'yxatini (Excel) yangilash: Faktura → 📤 Excel yuklash → «Vozvrat ro'yxati».</div>
+    </div>`;
+}
+async function sozNav(no, navbat) { try { await api('/api/transh/faol', {no, navbat}); haptic('success'); toast(navbat ? `№${no} kundalik navbatga qo'shildi` : `№${no} faqat tekshiruv uchun`); invalidate(); loadAdmin(ADM); } catch (e) { toast(e.message); } }
+async function sozTr(no, faol) { try { await api('/api/transh/faol', {no, faol}); haptic('success'); toast(faol ? `№${no} yoqildi` : `№${no} o'chirildi`); invalidate(); loadAdmin(ADM); } catch (e) { toast(e.message); } }
+async function sozVz(no, faol) { try { await api('/api/vozvrat/faol', {no, faol}); haptic('success'); toast(faol ? `Vozvrat ${no}-qism yoqildi` : `Vozvrat ${no}-qism o'chirildi`); invalidate(); loadAdmin(ADM); } catch (e) { toast(e.message); } }
+function sozNewTr() { show('transh'); setTimeout(() => { const b = $('#newbtn'); if (b) b.click(); }, 700); }
+async function sozVqSave() {
+  const body = {summa: $('#vqs').value, birja: $('#vqb').value, narxlar: Object.fromEntries([...document.querySelectorAll('.vqp')].map(i => [i.dataset.t, i.value]))};
+  try { const r = await api('/api/vozvrat/qism', body); haptic('success'); toast(`Vozvrat ${r.no}-qism saqlandi`); VQFORM = false; invalidate(); loadAdmin(ADM); }
+  catch (e) { toast(e.message); }
+}
 const PRESET_L = {tekshiruvchi: '🔍 Tekshiruvchi', koruvchi: '👁 Ko\'ruvchi', boshqaruvchi: '💳 Boshqaruvchi'};
 const PERM_L = {holat: '📊 Holat (qoldiq, umumiy)', faktura: '🧾 Faktura bo\'limi', xatolar: '⚠️ Xatoliklar',
   transhlar: '💳 Transhlar va narxlar (ko\'rish)', faktura_yuklash: '📥 Faktura yuklash (botga)', vozvrat_yuklash: '↩️ Vozvrat ro\'yxatini yuklash',
