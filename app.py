@@ -65,7 +65,7 @@ PERM_MAP = {("GET", "/api/holat"): "holat", ("GET", "/api/fakturalar"): "faktura
             ("POST", "/api/transh"): "transh_qoshish", ("POST", "/api/transh/yop"): "transh_qoshish",
             ("POST", "/api/chegara"): "transh_qoshish", ("POST", "/api/vozvrat/yop"): "transh_qoshish", ("POST", "/api/transh/faol"): "transh_qoshish", ("POST", "/api/transh/ochir"): "transh_qoshish",
             ("POST", "/api/transh/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/faol"): "transh_qoshish",
-            ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/seriya"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
+            ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/seriya"): "transh_qoshish", ("POST", "/api/qqs"): "transh_qoshish", ("POST", "/api/qqs/metall"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
             ("POST", "/api/xatolar/excel"): "hisobot", ("POST", "/api/faktura/excel"): "hisobot"}
 
 
@@ -553,8 +553,59 @@ async def api_transhlar(request):
         out.append(dict(no=t["no"], sana=t["sana"], summa=t["summa_usd"], birja=t["birja_999"], narxlar=t["narxlar"],
                         yopilgan_sana=t.get("yopilgan_sana"), used=r2(x.get("used")), left=r2(x.get("left")),
                         holat=x.get("holat") if t.get("faol", True) else "Ўчирилган", faol=t.get("faol", True),
-                        navbat=not t.get("faqat_tekshiruv"), lom=r2(t["birja_999"] * 585 / 999), tarkib=N.narx_tarkibi(t, cfg)))
+                        navbat=not t.get("faqat_tekshiruv"), lom=r2(t["birja_999"] * 585 / 999), tarkib=N.narx_tarkibi(t, cfg),
+))
     return web.json_response({"chegara": cfg.get("chegara_usd_gr", 0.3), "transhlar": out})
+
+
+def qqs_json(t, cfg, rows):
+    a = N.qqs_tahlil(t, cfg)
+    jami, gramm = N.qqs_ortiqcha_jami(rows, t, a) if a["metall_585"] else (0.0, 0.0)
+    return dict(metall_585=a["metall_585"], metall_999=a["metall_999"], manba=a["manba"], kiritilgan=t.get("metall_585"),
+                stavka=a["stavka"], qonun=a["qonun_qaytish"], gavhar=a["gavhar_qaytish"], ortiqcha_jami=jami, gramm=gramm,
+                gramm_tur=N.qqs_gramm_tur(rows, t),
+                rows=[{k: x.get(k) for k in ("tur", "lom", "ishchilik", "qqs", "jami", "qqs_toliq", "qqs_qonun", "jami_qonun", "ortiqcha")}
+                      for x in a["rows"]])
+
+
+async def api_qqs(request):
+    """Админ: ҚҚС созламаси — ставка, қонун бўйича қайтиш улуши, Gavhar ҳисоблаган улуш, металл нархи манбаи."""
+    b = await request.json()
+    num = lambda x: float(str(x).replace(",", ".")) if x not in (None, "") else None
+    q = {}
+    for k in ("stavka", "qonun_qaytish", "gavhar_qaytish"):
+        v = num(b.get(k))
+        if v is not None:
+            if not (0 <= v <= 100):
+                return web.json_response({"errors": ["Фоиз 0 дан 100 гача бўлсин"]}, status=400)
+            q[k] = v
+    if b.get("manba"):
+        q["manba"] = str(b["manba"])[:120]
+    async with B.LOCK:
+        cfg = B.load_cfg()
+        cfg["qqs"] = {**(cfg.get("qqs") or {}), **q}
+        B.save_cfg(cfg)
+    return web.json_response({"ok": True, "qqs": N.qqs_cfg(cfg)})
+
+
+async def api_qqs_metall(request):
+    """Админ: ҚҚС таҳлили учун пулнинг металл қиймати (585, $/гр). Текширувга таъсир қилмайди."""
+    b = await request.json()
+    try:
+        mv = float(str(b.get("metall_585") or "").replace(",", ".")) if str(b.get("metall_585") or "").strip() else None
+    except ValueError:
+        return web.json_response({"errors": ["Рақам киритинг"]}, status=400)
+    async with B.LOCK:
+        cfg = B.load_cfg()
+        t = next((t for t in cfg["transhlar"] if t["no"] == int(b.get("no", 0))), None)
+        if not t:
+            return web.json_response({"errors": ["Бундай транш йўқ"]}, status=404)
+        if mv:
+            t["metall_585"] = mv
+        else:
+            t.pop("metall_585", None)
+        B.save_cfg(cfg)
+    return web.json_response({"ok": True})
 
 
 def transh_from_body(b):
@@ -575,8 +626,10 @@ def transh_from_body(b):
 
 async def api_transh_tekshir(request):
     p = transh_from_body(await request.json())
-    errs, notes = B.check_transh(p, B.load_cfg())
-    return web.json_response({"errors": errs, "notes": notes, "parsed": p})
+    cfg = B.load_cfg()
+    errs, notes = B.check_transh(p, cfg)
+    qq = N.qqs_yangi(p, cfg) if not errs and p.get("birja") and p.get("narxlar") else None
+    return web.json_response({"errors": errs, "notes": notes, "parsed": p, "qqs": qq})
 
 
 async def api_transh_saqla(request):
@@ -685,7 +738,11 @@ async def api_sozlama(request):
         vozvrat.append(dict(no=q["no"], nomi=f"Сумма бўйича (биржа {q['birja']})", summa=r2(q["summa"]), berilgan=r2(q["berilgan"]),
                             qolgan=r2(q["qolgan"]), faol=q.get("faol", True), yopilgan=q.get("yopilgan"), birja=q["birja"]))
     seriya = cfg.get("seriya_tosh") if cfg.get("seriya_tosh") is not None else N.SERIYA_TOSH_DEFAULT
-    return web.json_response({"transhlar": tr, "vozvrat": vozvrat, "seriya_tosh": seriya})
+    qq = []
+    for t in sorted(cfg["transhlar"], key=lambda t: (t["sana"], t["no"])):
+        x = qqs_json(t, cfg, rows)
+        qq.append(dict(no=t["no"], sana=t["sana"], birja=t["birja_999"], **x))
+    return web.json_response({"transhlar": tr, "vozvrat": vozvrat, "seriya_tosh": seriya, "qqs": N.qqs_cfg(cfg), "qqs_pullar": qq})
 
 
 async def api_seriya(request):
@@ -907,6 +964,8 @@ def make_web():
     app.router.add_post("/api/transh/tahrir", api_transh_tahrir)
     app.router.add_get("/api/sozlama", api_sozlama)
     app.router.add_post("/api/seriya", api_seriya)
+    app.router.add_post("/api/qqs", api_qqs)
+    app.router.add_post("/api/qqs/metall", api_qqs_metall)
     app.router.add_post("/api/vozvrat/faol", api_vozvrat_faol)
     app.router.add_post("/api/vozvrat/qism", api_vozvrat_qism)
     app.router.add_post("/api/yuklash", api_yuklash)
@@ -939,6 +998,7 @@ async def start_cmd(update, ctx):
         "❌ Хатолар Excel да — /xatolar\n"
         "🔎 Фақат текшириш (ойлик, 15 кунлик, эски фактура) — /tekshir\n"
         "📅 Ой якуни: пуллар қанча ишлатилди, кейинги ойга қанча ўтди — /oy_yakuni\n"
+        "🧾 ҚҚС (НДС) текшируви: Gavhar қўйган ↔ қонун бўйича — /qqs\n"
         "⏸ Пулни текширувдан ўчириш / ёқиш — /pul_ochir 1, /pul_yoq 1\n"
         "🔒 Возврат қисмини якунлаш — /vozvrat_yop 2\n"
         "↩️ Охирги фактурани бекор қилиш — /bekor\n\n"
@@ -964,6 +1024,7 @@ def make_bot():
     app.add_handler(CommandHandler("vozvrat_och", B.vozvrat_och))
     app.add_handler(CommandHandler(["oylik", "tekshir"], B.oylik))
     app.add_handler(CommandHandler("oy_yakuni", B.oy_yakuni))
+    app.add_handler(CommandHandler(["qqs", "nds"], B.qqs_cmd))
     app.add_handler(CommandHandler("pul_ochir", B.pul_ochir))
     app.add_handler(CommandHandler("pul_yoq", B.pul_yoq))
     app.add_handler(CommandHandler("och", B.och))
@@ -972,6 +1033,7 @@ def make_bot():
     app.add_handler(CommandHandler("narxlar", B.narxlar))
     app.add_handler(CallbackQueryHandler(B.tozalash_cb, pattern="^rs_"))
     app.add_handler(CallbackQueryHandler(B.transh_cb, pattern="^tr_"))
+    app.add_handler(CallbackQueryHandler(B.qqs_cb, pattern="^qq_"))
     app.add_handler(CallbackQueryHandler(B.returns_cb, pattern="^rv_"))
     app.add_handler(CallbackQueryHandler(B.qoshish_cb, pattern="^pq_"))
     app.add_handler(MessageHandler(filters.Document.ALL, B.document))

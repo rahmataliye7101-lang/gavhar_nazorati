@@ -577,7 +577,7 @@ def check_transh(p, cfg):
             if prev and n in prev["narxlar"]:
                 d = (v - lom) - (prev["narxlar"][n] - prev["birja_999"] * 585 / 999)
                 if abs(d) > 0.02:
-                    ogoh.append(f"⚠ {n}: ишчилик+НДС олдинги траншдан {d:+.2f} $ фарқ қилади")
+                    ogoh.append(f"ℹ {n}: ишчилик+НДС олдинги пулдан {d:+.2f} $ фарқ қилади (НДС биржа ва олтин нархига қараб ўзгаради — пастдаги НДС текширувига қаранг)")
         if prev:
             for n in prev["narxlar"]:
                 if n not in p["narxlar"]:
@@ -644,6 +644,15 @@ async def confirm_transh(update: Update, ctx, p):
                     f"💳 Транш №{dup['no']} ({sana}) га {p['summa']:,.0f} $ қўшилди → жами {dup['summa_usd']:,.0f} $")
                 body = "Нархлар ўзгармади (ўша транш нархлари)."
             else:
+                qq = nazorat.qqs_yangi(p, cfg)
+                if qq["holat"] == "xato" and not p.get("_qqs_ok"):
+                    ctx.user_data["qqs_pending"] = p
+                    kbq = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Барибир қабул қилиш", callback_data="qq_ok")],
+                                                [InlineKeyboardButton("❌ Қабул қилмаслик", callback_data="qq_no")]])
+                    return await update.effective_message.reply_text(
+                        f"⏸ Янги пул ҲАЛИ ҚАБУЛ ҚИЛИНМАДИ\n📅 {sana} · 💵 {p['summa']:,.0f} $ · биржа {p['birja']}\n\n"
+                        + "\n".join(notes) + "\n\n" + "\n".join(qq["lines"])
+                        + "\n\nGavhar билан аниқлаштиринг. Барибир қабул қиласизми?", reply_markup=kbq)
                 no = max((t["no"] for t in cfg["transhlar"]), default=0) + 1
                 eng_yangi = max((t["sana"] for t in cfg["transhlar"] if not t.get("faqat_tekshiruv")), default="")
                 eski = bool(eng_yangi and p["sana"] and p["sana"] < eng_yangi)
@@ -652,7 +661,7 @@ async def confirm_transh(update: Update, ctx, p):
                                          "faqat_tekshiruv": False})
                 cfg["transhlar"].sort(key=lambda t: t["no"])
                 undo, head = f"tr_undo:trnew:{no}:0", f"💳 Янги транш №{no} қўшилди\n📅 {sana} · 💵 {p['summa']:,.0f} $ · биржа {p['birja']}"
-                body = "\n".join(notes)
+                body = "\n".join(notes) + "\n\n" + "\n".join(qq["lines"])
                 if eski:
                     body += (f"\n\n📅 Бу пул санаси охирги пулдан ({nazorat._dmy(eng_yangi)}) эски — навбатда санаси бўйича ОЛДИНГА "
                              "турди (эски пул биринчи ишлатилади). Агар у фақат ўтган ойлар приходини текшириш учун бўлса — пастдаги тугмани босинг.")
@@ -767,6 +776,24 @@ async def on_text(update: Update, ctx):
         "📎 Фактура (Excel) ташланг — текшириб бераман.\n"
         "💳 Янги пул берилса — Gavhar нарх хабарини forward қилинг.\n"
         "📊 Ҳолат: /holat")
+
+
+async def qqs_cb(update: Update, ctx):
+    """Янги пулда НДС нотўғри чиқса: «Барибир қабул қилиш» / «Қабул қилмаслик»."""
+    q = update.callback_query
+    if not allowed(update):
+        return await q.answer("Рухсат йўқ", show_alert=True)
+    await q.answer()
+    if not has_perm(update.effective_user.id, "transh_qoshish"):
+        return await q.edit_message_text("⛔ Сизда транш қўшиш рухсати йўқ.")
+    p = ctx.user_data.pop("qqs_pending", None)
+    if not p:
+        return await q.edit_message_text(q.message.text + "\n\n(эскирган — пул хабарини қайта юборинг)")
+    if q.data == "qq_no":
+        return await q.edit_message_text(q.message.text + "\n\n❌ Қабул қилинмади. Тўғриланган нархлар билан қайта юборинг.")
+    await q.edit_message_text(q.message.text + "\n\n✅ НДС огоҳлантиришига қарамай қабул қилинди.")
+    p["_qqs_ok"] = True
+    await confirm_transh(update, ctx, p)
 
 
 async def transh_cb(update: Update, ctx):
@@ -924,6 +951,16 @@ async def pul_yoq(update: Update, ctx):
 
 
 @need("holat")
+@guard
+async def qqs_cmd(update: Update, ctx):
+    """/qqs — ҚҚС (НДС) текшируви: ҳар пул бўйича Gavhar қўйган ↔ қонун бўйича ҚҚС ва ортиқча сумма."""
+    cfg = load_cfg()
+    rows, _ = nazorat.compute(cfg, nazorat.load_ledger(str(LEDGER)), nazorat.load_returns(str(VOZVRAT)))
+    txt = nazorat.qqs_matn(cfg, rows)
+    for i in range(0, len(txt), 3900):
+        await update.message.reply_text(txt[i:i + 3900])
+
+
 async def oy_yakuni(update: Update, ctx):
     """/oy_yakuni [2026-10 ёки 10.2026] — ой бўйича пуллар: ой бошида, ишлатилди, кейинги ойга ўтди."""
     cfg = load_cfg()

@@ -37,6 +37,156 @@ def narx_tarkibi(t, cfg=None):
     return out
 
 
+
+# ---------------- ҚҚС (НДС) таҳлили ----------------
+# ПҚ-207 (26.06.2025), 6-банд, 01.01.2026 – 01.01.2028: ҚҚС базаси = сотиш нархи − қимматбаҳо металл/тош қиймати
+# (Солиқ қўмитаси эълон қилган нархларда); бюджетга тўланган ҚҚС нинг 80% и қайтарилади (даромаднинг ≥80% и заргарликдан бўлса).
+QQS_DEFAULT = dict(stavka=12.0, qonun_qaytish=50.0, gavhar_qaytish=50.0, manba="Солиқ қўмитаси эълон қилган нарх")
+
+
+def qqs_cfg(cfg):
+    d = dict(QQS_DEFAULT)
+    d.update({k: v for k, v in ((cfg or {}).get("qqs") or {}).items() if v not in (None, "")})
+    return d
+
+
+def qqs_k(stavka, qaytish):
+    """1 гр нархга қўшиладиган ҚҚС улуши: (нарх − металл) × k.  k = ставка/(1+ставка) × (1 − қайтиш)."""
+    s = stavka / 100
+    return s / (1 + s) * (1 - qaytish / 100)
+
+
+def qqs_tahlil(t, cfg):
+    """Транш бўйича: Gavhar қўйган ҚҚС ↔ қонун бўйича ҚҚС (ҳар тур учун, $/гр)."""
+    q = qqs_cfg(cfg)
+    kG, kL = qqs_k(q["stavka"], q["gavhar_qaytish"]), qqs_k(q["stavka"], q["qonun_qaytish"])
+    rows = narx_tarkibi(t, cfg)
+    C, manba = t.get("metall_585"), "kiritilgan"
+    if not C:
+        cs = [x["jami"] - x["qqs"] / kG for x in rows if x["qqs"] > 0.02] if kG > 0 else []
+        C, manba = (round(sum(cs) / len(cs), 2), "Gavhar narxidan") if cs else (None, None)
+    for x in rows:
+        base = x["lom"] + x["ishchilik"]
+        if C is None:
+            x.update(qqs_qonun=None, jami_qonun=None, ortiqcha=None, qqs_toliq=None)
+            continue
+        P = (base - kL * C) / (1 - kL) if kL < 1 else base
+        if P < C:  # ҚҚС базаси манфий — ҚҚС йўқ
+            P = base
+        x["qqs_toliq"] = round(max(x["jami"] - C, 0) * (q["stavka"] / 100) / (1 + q["stavka"] / 100), 3)
+        x["qqs_qonun"] = round(P - base, 3)
+        x["jami_qonun"] = round(P, 2)
+        x["ortiqcha"] = round(x["jami"] - P, 3)
+    return dict(metall_585=C, metall_999=round(C * 999 / 585, 2) if C else None, manba=manba, rows=rows,
+                stavka=q["stavka"], qonun_qaytish=q["qonun_qaytish"], gavhar_qaytish=q["gavhar_qaytish"], kG=kG, kL=kL)
+
+
+def qqs_ortiqcha_jami(ledger_rows, t, tahlil):
+    """Шу пулдан олинган товарлар бўйича ортиқча ҚҚС ($): ҳар қаторнинг шу пулдан сарфи / 1 гр нарх × ортиқча/гр."""
+    ort = {x["tur"]: x.get("ortiqcha") for x in tahlil["rows"]}
+    jami, gramm = 0.0, 0.0
+    for r in ledger_rows:
+        c = (r.get("sarf") or {}).get(t["no"])
+        if not c:
+            continue
+        tur_ = "Вакс" if r.get("tur") == "Кузсиз" else r.get("tur")
+        p = t["narxlar"].get(tur_) or t["narxlar"].get("Дорика")
+        o = ort.get(tur_) if ort.get(tur_) is not None else ort.get("Дорика")
+        if not p or o is None:
+            continue
+        g = c / p
+        gramm += g
+        jami += g * o
+    return round(jami, 2), round(gramm, 2)
+
+
+def qqs_yangi(p, cfg):
+    """Янги пул (транш) нархларидаги ҚҚС ни қабул қилишдан ОЛДИН текшириш. holat: ok | xato | kam | yoq."""
+    q = qqs_cfg(cfg)
+    t = {"no": 0, "sana": p.get("sana"), "birja_999": p["birja"], "narxlar": dict(p["narxlar"])}
+    a = qqs_tahlil(t, cfg)
+    L = [f"🧾 НДС текшируви (қайтиш: қонун {q['qonun_qaytish']:g}%, Gavhar {q['gavhar_qaytish']:g}%):"]
+    if a["metall_585"] is None:
+        return dict(holat="yoq", lines=L + ["   Нархда НДС йўқ (1 гр = лом + ишчилик) — текширадиган нарса йўқ."])
+    kG = a["kG"]
+    seen, cs = set(), []
+    for x in a["rows"]:
+        if x["qqs"] > 0.02 and x["jami"] not in seen:
+            seen.add(x["jami"])
+            cs.append(x["jami"] - x["qqs"] / kG)
+    for x in a["rows"]:
+        o = x.get("ortiqcha")
+        if o is None:
+            continue
+        belgi = "✅" if abs(o) <= 0.015 else ("❌" if o > 0 else "ℹ")
+        L.append(f"   {belgi} {x['tur']}: НДС {x['qqs']:.2f} · қонун бўйича {x['qqs_qonun']:.2f}" + (f" · ортиқча {o:+.2f} $/гр" if abs(o) > 0.015 else ""))
+    L.append(f"   Олтин қиймати (Gavhar нархидан): {a['metall_585']:.2f} $/гр 585 (999: {a['metall_999']:.2f})")
+    ors = [x["ortiqcha"] for x in a["rows"] if x.get("ortiqcha") is not None]
+    holat = "ok"
+    if cs and max(cs) - min(cs) > 0.3:
+        holat = "xato"
+        L.append(f"   ⚠ Турлар бўйича олтин қиймати ҳар хил чиқди ({min(cs):.2f}–{max(cs):.2f}) — НДС бир хил қоида билан ҳисобланмаган, нархлардан бири нотўғри бўлиши мумкин.")
+    if ors and max(ors) > 0.015:
+        holat = "xato"
+        L.append(f"❌ НДС НОТЎҒРИ — ҳар граммга +{max(min(ors), 0):.2f} … +{max(ors):.2f} $ ортиқча.")
+    elif holat == "xato":
+        L.append("❌ НДС ни текширинг.")
+    elif ors and min(ors) < -0.015:
+        holat = "kam"
+        L.append("ℹ НДС қонундагидан кам — бизга фойда.")
+    else:
+        L.append("✅ НДС ТЎҒРИ — қонун бўйича ҳисобга мос.")
+    return dict(holat=holat, lines=L)
+
+
+def qqs_gramm_tur(ledger_rows, t):
+    """Шу пулдан олинган грамм — нарх тури бўйича (mini app жонли ҳисоби учун)."""
+    out = defaultdict(float)
+    for r in ledger_rows:
+        c = (r.get("sarf") or {}).get(t["no"])
+        if not c:
+            continue
+        tur_ = "Вакс" if r.get("tur") == "Кузсиз" else r.get("tur")
+        p = t["narxlar"].get(tur_) or t["narxlar"].get("Дорика")
+        if p:
+            out[tur_] += c / p
+    return {k: round(v, 3) for k, v in out.items()}
+
+
+def qqs_matn(cfg, ledger_rows):
+    q = qqs_cfg(cfg)
+    L = ["🧾 ҚҚС (НДС) ТЕКШИРУВИ", "",
+         f"Қонун (ПҚ-207, 01.01.2026–01.01.2028): ҚҚС {q['stavka']:g}% фақат устамага (нарх − металл қиймати),",
+         f"тўланган ҚҚС нинг {q['qonun_qaytish']:g}% и қайтарилади → нархга {100 - q['qonun_qaytish']:g}% қўшилади.",
+         f"Gavhar ҳисоби: {q['gavhar_qaytish']:g}% қайтади деб → нархга {100 - q['gavhar_qaytish']:g}% қўшган.", ""]
+    jami_all = 0.0
+    for t in sorted(cfg.get("transhlar", []), key=lambda t: t["sana"]):
+        a = qqs_tahlil(t, cfg)
+        L.append(f"💳 №{t['no']} · {_dmy(t['sana'])} · биржа {t['birja_999']:g}")
+        if a["metall_585"] is None:
+            L.append("   Gavhar нархида ҚҚС йўқ (ёки металл қиймати киритилмаган)")
+            continue
+        L.append(f"   Металл қиймати (585): {a['metall_585']:.2f} $/гр ({'киритилган' if a['manba'] == 'kiritilgan' else 'Gavhar нархидан аниқланди'})")
+        for x in a["rows"]:
+            if x.get("qqs_qonun") is None:
+                continue
+            L.append(f"   {x['tur']}: Gavhar {x['qqs']:.2f} · қонун бўйича {x['qqs_qonun']:.2f} · ортиқча {x['ortiqcha']:+.2f} $/гр")
+        ors = [x["ortiqcha"] for x in a["rows"] if x.get("ortiqcha") is not None]
+        if ors and max(ors) > 0.015:
+            L.append(f"   ❌ НОТЎҒРИ — ҚҚС ортиқча олинган: ҳар граммга +{max(min(ors), 0):.2f} … +{max(ors):.2f} $")
+        elif ors and min(ors) < -0.015:
+            L.append("   ℹ ҚҚС қонундагидан кам олинган (бизга фойда)")
+        elif ors:
+            L.append("   ✅ ТЎҒРИ — қонун бўйича ҳисобга мос")
+        s_, g_ = qqs_ortiqcha_jami(ledger_rows, t, a)
+        if ors and max(ors) <= 0.015 and min(ors) >= -0.015:
+            s_ = 0.0  # тўғри — фарқ фақат яхлитлашдан
+        if g_:
+            L.append(f"   Шу пулдан олинган {g_:,.0f} гр бўйича ортиқча ҚҚС: {s_:,.2f} $")
+            jami_all += s_
+    L += ["", f"Жами ортиқча ҚҚС: {jami_all:,.2f} $", "Созлама: mini app → Admin → «QQS (NDS)»."]
+    return "\n".join(L)
+
 # ---------------- ўқиш ----------------
 def norm(s):
     return re.sub(r"\s+", " ", str(s or "")).strip()

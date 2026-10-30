@@ -679,8 +679,10 @@ function newForm(prev) {
   $('#nchk').onclick = async () => {
     try { const r = await api('/api/transh/tekshir', body());
       $('#nnotes').innerHTML = r.errors.length ? r.errors.map(x => `<div class="note red">✕ ${E(x)}</div>`).join('')
-        : r.notes.map(x => `<div class="note ${x.includes('⚠') ? 'red' : ''}">${E(x)}</div>`).join('');
-      $('#nsave').disabled = !!r.errors.length; haptic(r.errors.length ? 'error' : 'success');
+        : r.notes.map(x => `<div class="note ${x.includes('⚠') ? 'red' : ''}">${E(x)}</div>`).join('')
+          + (r.qqs ? `<div class="card ${r.qqs.holat === 'xato' ? 'alert' : ''}" style="margin-top:8px;font-size:13px">${r.qqs.lines.map(x => `<div class="${/❌|⚠/.test(x) ? 'red' : ''}">${E(x)}</div>`).join('')}</div>` : '');
+      $('#nsave').disabled = !!r.errors.length; haptic(r.errors.length || (r.qqs && r.qqs.holat === 'xato') ? 'error' : 'success');
+      $('#nsave').textContent = r.qqs && r.qqs.holat === 'xato' ? "⚠ QQS noto'g'ri — baribir saqlash" : 'Saqlash';
     } catch (e) { toast(e.message); }
   };
   $('#nsave').onclick = async () => {
@@ -739,6 +741,7 @@ async function loadAdmin(d) {
             <input type="checkbox" style="width:20px;height:20px" ${(u.perms || []).includes(k) ? 'checked' : ''} onchange="permSet(${u.id}, this)" data-pk="${k}">${t}</label>`).join('')}
         </div>` : ''}`).join('')}</div>
 `;
+    if ($('#qc_tr')) qcFill();
   } catch (e) { fail(el, e); }
 }
 let PERM_OPEN = null, ADM = null, SOZ = null, VQFORM = false;
@@ -776,6 +779,7 @@ function sozlamaHtml() {
       <div class="rw" style="gap:8px"><input id="seriya" value="${esc((SOZ.seriya_tosh || []).join(', '))}" placeholder="QSG, QSW, QQF, ZSG" style="flex:1">
         <button class="btn2" onclick="sozSeriya()">Saqlash</button></div>
     </div>
+    ${qqsAdminHtml()}
     ${qoidalarHtml()}`;
 }
 async function sozNav(no, navbat) { try { await api('/api/transh/faol', {no, navbat}); haptic('success'); toast(navbat ? `№${no} kundalik navbatga qo'shildi` : `№${no} faqat tekshiruv uchun`); invalidate(); loadAdmin(ADM); } catch (e) { toast(e.message); } }
@@ -824,6 +828,291 @@ function qoidalarHtml() {
       </ul></details>
     </div>
   </details>`;
+}
+/* ---------- QQS (NDS) ---------- */
+const TRN = t => t === 'Вакс' ? "Vaks / ko'zsiz" : L(t);
+function qqsTrHtml(q) {
+  if (!q) return '';
+  if (!q.metall_585) return `<div class="mut" style="font-size:12px;margin-top:8px">🧾 QQS: Gavhar narxida QQS yo'q (yoki metall qiymati kiritilmagan).</div>`;
+  return `<div style="background:var(--bg);border-radius:12px;padding:10px 12px;margin-top:10px">
+    <div class="rw"><b style="font-size:13px">🧾 QQS tekshiruvi</b><span class="mut" style="font-size:12px">qaytish: qonun ${fmt(q.qonun)}% · Gavhar ${fmt(q.gavhar)}%</span></div>
+    <table style="margin-top:6px;font-size:13px"><tr><th>Tur</th><th>Gavhar</th><th>Qonun bo'yicha</th><th>Ortiqcha</th></tr>
+      ${q.rows.filter(x => x.qqs_qonun != null).map(x => `<tr><td>${TRN(x.tur)}</td><td>${fmt(x.qqs, 2)}</td><td>${fmt(x.qqs_qonun, 2)}</td>
+        <td class="${x.ortiqcha > 0.005 ? 'red' : ''}"><b>${x.ortiqcha > 0 ? '+' : ''}${fmt(x.ortiqcha, 2)}</b></td></tr>`).join('')}</table>
+    <div class="mut" style="font-size:12px;margin-top:6px">Metall qiymati (585): <b>${fmt(q.metall_585, 2)} $/gr</b> (999 da ${fmt(q.metall_999, 2)}) — ${q.manba === 'kiritilgan' ? 'siz kiritgan' : 'Gavhar narxidan aniqlandi'}.
+      ${q.gramm ? `<br>Shu puldan olingan ${fmt(q.gramm, 0)} gr bo'yicha ortiqcha QQS: <b class="${q.ortiqcha_jami > 0 ? 'red' : ''}">${usd(q.ortiqcha_jami, 2)}</b>` : ''}</div>
+  </div>`;
+}
+function qqsVerdict(p, v) {
+  v = v || qqsV(); const q = {qonun_qaytish: v.qon, gavhar_qaytish: v.gav}, rs = (p.rows || []).filter(x => x.ortiqcha != null);
+  if (!p.metall_585 || !rs.length) return {cls: 'n', badge: "— QQS yo'q", matn: "Gavhar narxida QQS yo'q (1 gr = lom + ishchilik) — tekshiradigan narsa yo'q."};
+  const mx = Math.max(...rs.map(x => x.ortiqcha)), mn = Math.min(...rs.map(x => x.ortiqcha));
+  const kG = 12 / 112 * (1 - q.gavhar_qaytish / 100);
+  const seen = {}, rr = rs.filter(x => x.qqs > 0.02 && !seen[x.jami] && (seen[x.jami] = 1));
+  const Cg = rr.length && kG > 0 ? rr.reduce((a, x) => a + x.jami - x.qqs / kG, 0) / rr.length : null;
+  const sab = [];
+  if (q.gavhar_qaytish < q.qonun_qaytish) sab.push(`Gavhar QQS ning ${fmt(q.gavhar_qaytish)}% i qaytadi deb hisoblagan, qonun bo'yicha ${fmt(q.qonun_qaytish)}% qaytadi — narxga ${fmt(100 - q.gavhar_qaytish)}% emas, ${fmt(100 - q.qonun_qaytish)}% qo'shilishi kerak`);
+  if (p.kiritilgan && Cg) { const d = p.kiritilgan - Cg; if (Math.abs(d) >= 0.15) sab.push(d > 0 ? `Gavhar oltinni ${fmt(Cg, 2)} deb olgan, haqiqiy ${fmt(p.kiritilgan, 2)} — ${fmt(d, 2)} $/gr past olgan, QQS bazasi katta` : `Gavhar oltinni ${fmt(Cg, 2)} deb olgan, haqiqiy ${fmt(p.kiritilgan, 2)} — yuqori olgan (bizga foyda)`); else sab.push(`oltin qiymati (${fmt(Cg, 2)}) siz kiritgan narx bilan mos`); }
+  else if (!p.kiritilgan) sab.push(`oltin qiymati Gavhar narxidan olindi (${fmt(p.metall_585, 2)}) — haqiqiy narxni kiritsangiz aniqroq`);
+  const jm = p.gramm ? ` Shu puldan olingan ${fmt(p.gramm, 0)} gr bo'yicha: <b>${usd(p.ortiqcha_jami, 2)}</b>.` : " Bu puldan hali tovar olinmagan.";
+  if (mx > 0.015) return {cls: 'r', badge: `❌ Noto'g'ri · +${fmt(mx, 2)} $/gr gacha`, matn: `❌ <b>QQS ortiqcha olingan</b>: har gramm uchun +${fmt(mn > 0 ? mn : 0, 2)} … +${fmt(mx, 2)} $.${jm}<br><span class="mut">Sabab: ${sab.join('; ')}.</span>`};
+  if (mn < -0.015) return {cls: 'a', badge: 'ℹ Kam olingan', matn: `ℹ Gavhar QQS ni qonundagidan <b>kam</b> olgan (${fmt(mn, 2)} $/gr) — bizga foyda.<br><span class="mut">${sab.join('; ')}.</span>`};
+  return {cls: 'g', badge: "✅ To'g'ri", matn: `✅ <b>QQS to'g'ri</b> — qonun bo'yicha hisobga mos (farq ±0.01 $/gr ichida).<br><span class="mut">${sab.join('; ')}.</span>`};
+}
+let QQSF = null;
+function qqsV() {
+  const g = id => { const e = $(id); const x = e ? parseFloat(String(e.value).replace(',', '.')) : NaN; return isNaN(x) ? null : x; };
+  const q = SOZ.qqs;
+  return {st: g('#qq_st') ?? q.stavka, qon: g('#qq_qon') ?? q.qonun_qaytish, gav: g('#qq_gav') ?? q.gavhar_qaytish};
+}
+function qqsCalcP(p, v) {
+  const s = v.st / 100, kG = s / (1 + s) * (1 - v.gav / 100), kL = s / (1 + s) * (1 - v.qon / 100);
+  let C = p.kiritilgan || null, manba = 'kiritilgan';
+  if (!C) { const seen = {}, rr = (p.rows || []).filter(x => x.qqs > 0.02 && !seen[x.jami] && (seen[x.jami] = 1));
+    C = rr.length && kG > 0 ? rr.reduce((a, x) => a + x.jami - x.qqs / kG, 0) / rr.length : null; manba = 'Gavhar narxidan'; }
+  const rows = (p.rows || []).map(x => { if (!C) return {...x, qqs_qonun: null, ortiqcha: null};
+    const base = x.lom + x.ishchilik; let P = kL < 1 ? (base - kL * C) / (1 - kL) : base; if (P < C) P = base;
+    return {...x, qqs_toliq: Math.max(x.jami - C, 0) * s / (1 + s), qqs_qonun: P - base, jami_qonun: P, ortiqcha: x.jami - P}; });
+  const om = {}; rows.forEach(x => om[x.tur] = x.ortiqcha);
+  let jami = 0, gramm = 0;
+  Object.entries(p.gramm_tur || {}).forEach(([t, g]) => { const o = om[t] ?? om['Дорика']; if (o != null) { jami += g * o; gramm += g; } });
+  return {...p, rows, metall_585: C, metall_999: C ? C * 999 / 585 : null, manba, ortiqcha_jami: jami, gramm: gramm || p.gramm, qonun: v.qon, gavhar: v.gav};
+}
+function qqsListHtml(v) {
+  const P = (SOZ.qqs_pullar || []).map(p => { const x = qqsCalcP(p, v); x._vd = qqsVerdict(x, v); if (x._vd.cls === 'g') x.ortiqcha_jami = 0; return x; });
+  const jami = P.reduce((a, p) => a + (p.metall_585 ? p.ortiqcha_jami : 0), 0);
+  const tj = $('#qqs_tj'); if (tj) { tj.textContent = usd(jami, 2); tj.className = jami > 0.5 ? 'red' : ''; }
+  return P.map(p => { const vd = p._vd; return `<details style="border-bottom:1px solid var(--line);padding:8px 0">
+      <summary style="cursor:pointer;list-style:none" class="rw"><span><b>№${p.no} · ${dmy(p.sana)}</b> <span class="mut" style="font-size:12px">birja ${p.birja}</span><br>
+        <span class="bd ${vd.cls}" style="margin-top:4px;display:inline-block">${vd.badge}</span></span>
+        <span class="${p.ortiqcha_jami > 0.5 ? 'red' : 'mut'}" style="text-align:right">${p.metall_585 ? usd(p.ortiqcha_jami, 2) : '—'} ›</span></summary>
+      <div style="font-size:13px;margin-top:6px">${vd.matn}</div>
+      ${qqsTrHtml(p)}
+      <div class="rw" style="gap:6px;margin-top:8px"><input id="qmet${p.no}" inputmode="decimal" value="${p.kiritilgan || ''}" placeholder="Metall 585, $/gr (${p.metall_585 ? fmt(p.metall_585, 2) : '—'})" style="flex:1">
+        <button class="btn2" onclick="qqsMet(${p.no})">Saqlash</button></div>
+      <div class="mut" style="font-size:11px;margin-top:4px">Soliq qo'mitasi narxini bilsangiz kiriting; bo'sh qoldirsangiz — Gavhar narxidan aniqlanadi.</div>
+    </details>`; }).join('') + `<div class="rw" style="padding-top:8px"><b>Jami ortiqcha QQS</b><b class="${jami > 0.5 ? 'red' : ''}">${usd(jami, 2)}</b></div>`;
+}
+function qqsLive() { const el = $('#qqs_list'); if (el) el.innerHTML = qqsListHtml(qqsV()); }
+function qqsAdminHtml() {
+  if (!SOZ || !SOZ.qqs) return '';
+  const q = SOZ.qqs, v0 = {st: q.stavka, qon: q.qonun_qaytish, gav: q.gavhar_qaytish};
+  const P = (SOZ.qqs_pullar || []).map(p => { const x = qqsCalcP(p, v0); if (qqsVerdict(x, v0).cls === 'g') x.ortiqcha_jami = 0; return x; });
+  const v = QQSF || {stavka: q.stavka, qonun_qaytish: q.qonun_qaytish, gavhar_qaytish: q.gavhar_qaytish};
+  const jami = P.reduce((a, p) => a + (p.metall_585 ? p.ortiqcha_jami : 0), 0);
+  const ex = [...P].reverse().find(p => p.metall_585);
+  const br = ex ? (ex.rows.find(x => x.tur === 'Бриллиант') || ex.rows[0]) : null;
+  const pct = (id, val, lbl) => `<div><label class="f">${lbl}</label><div class="rw" style="gap:6px"><input id="${id}" inputmode="decimal" value="${val}" style="flex:1" oninput="qqsLive()"><span class="mut">%</span></div></div>`;
+  const li = t => `<li style="margin:4px 0">${t}</li>`;
+  return `<div class="sec">QQS (NDS)</div>
+  <details class="card" style="padding:0">
+    <summary style="padding:14px 16px;font-weight:600;cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center">
+      <span>🧾 QQS sozlamasi va pullar <span class="mut" style="font-weight:400;font-size:12px">— jami ortiqcha</span> <span id="qqs_tj" class="${jami > 0.5 ? 'red' : ''}">${usd(jami, 2)}</span></span><span class="mut">›</span></summary>
+    <div style="padding:0 16px 14px">
+    <div class="mut" style="font-size:12px">Gavhar narxidagi QQS ni qonun bo'yicha tekshirish. Foizni o'zgartirsangiz — pastdagi pullar darhol qayta hisoblanadi; doimiy qilish uchun «Saqlash».</div>
+    <div class="g2" style="margin-top:8px">
+      ${pct('qq_qon', v.qonun_qaytish, "Qonun bo'yicha qaytadi")}
+      ${pct('qq_gav', v.gavhar_qaytish, 'Gavhar hisoblagan')}
+    </div>
+    <div class="rw" style="gap:6px;margin-top:8px;justify-content:flex-start;flex-wrap:wrap">
+      <span class="mut" style="font-size:12px">Qonun:</span>
+      ${[80, 50, 0].map(x => `<button class="btn2" onclick="$('#qq_qon').value=${x};qqsLive()">${x}%</button>`).join('')}
+      <span class="mut" style="font-size:12px;margin-left:6px">Gavhar:</span>
+      ${[50, 80].map(x => `<button class="btn2" onclick="$('#qq_gav').value=${x};qqsLive()">${x}%</button>`).join('')}
+    </div>
+    <div class="g2" style="margin-top:8px">${pct('qq_st', v.stavka, 'QQS stavkasi')}<div></div></div>
+    <button class="btn" style="margin-top:10px" onclick="qqsSave()">Saqlash</button>
+    <div class="sm" style="font-weight:600;margin-top:14px">Pullar bo'yicha</div>
+    <div id="qqs_list">${qqsListHtml(v0)}</div>
+    <div class="mut" style="font-size:12px;margin-top:6px">Faqat ko'rish uchun: QQS hisobi pullar va fakturalar tekshiruviga ta'sir qilmaydi. Ortiqcha QQS — shu puldan olingan tovarlar grammi bo'yicha.</div>
+    </div>
+  </details>
+  ${qcHtml()}
+  <details class="card" style="margin-top:12px;padding:0">
+    <summary style="padding:14px 16px;font-weight:600;cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center">
+      <span>📘 QQS — qonunchilik va hisob logikasi</span><span class="mut">›</span></summary>
+    <div style="padding:0 16px 14px;font-size:13px">
+      <div class="sm" style="font-weight:600">⚖️ Qonunchilik</div>
+      <ul style="padding-left:18px;margin:6px 0">
+        ${li("<b>PQ-207</b> (Prezident qarori, 26.06.2025) «Zargarlik buyumlarini ishlab chiqarish sohasini qo'llab-quvvatlash bo'yicha qo'shimcha chora-tadbirlar», 6-band — <b>01.01.2026 dan 01.01.2028 gacha</b>.")}
+        ${li("QQS bazasi = zargarlik buyumi sotish narxi − ichidagi qimmatbaho metall va tosh qiymati (ijobiy farq). Metall qiymati — <b>Soliq qo'mitasi rasmiy saytida e'lon qilingan narx</b> bo'yicha.")}
+        ${li("Byudjetga to'langan QQS ning <b>80 foizi</b> har oyning 25-sanasigacha avtomat qaytariladi — korxona daromadining kamida 80% i zargarlikdan bo'lsa.")}
+        ${li("QQS stavkasi — 12%. Hozirgi sozlama: qonun bo'yicha qaytish <b>" + fmt(q.qonun_qaytish) + "%</b>, Gavhar hisoblagan <b>" + fmt(q.gavhar_qaytish) + "%</b>.")}
+      </ul>
+      <div class="sm" style="font-weight:600;margin-top:10px">🧮 Hisob logikasi</div>
+      <ol style="padding-left:18px;margin:6px 0">
+        ${li("Lom = birja (999) × 585 / 999. Ishchilik — tur bo'yicha (Brilliant 10.5, Vaks 8.5, Fianit 7, Dorika/Braslet/Detskiy/Van Klif 11).")}
+        ${li("Metall qiymatigacha bo'lgan qism — QQS 0%. QQS faqat <b>(1 gr narxi − metall qiymati)</b> farqiga: farq × 12/112.")}
+        ${li("QQS ning qaytadigan qismini Gavhar qaytarib oladi, qolganini narxga qo'shadi: <b>1 gr narxi − (1 − qaytish) × QQS = lom + ishchilik</b>.")}
+        ${li("Demak narxga qo'shiladigan QQS ≈ " + fmt(12/112*100, 2) + "% × (1 − qaytish) × (1 gr narxi − metall qiymati). Qaytish 50% → 5.36%, 80% → 2.14%.")}
+        ${li("Metall qiymati kiritilmagan bo'lsa — Gavhar qo'ygan QQS dan (Gavhar hisoblagan ulush bo'yicha) teskari aniqlanadi; hamma turlar uchun bir xil chiqishi kerak.")}
+        ${li("Ortiqcha = Gavhar 1 gr narxi − qonun bo'yicha 1 gr narxi. Pul bo'yicha jami = shu puldan olingan har bir tovar grammi × ortiqcha.")}
+      </ol>
+      ${ex ? (() => { const kG = 12 / 112 * (1 - q.gavhar_qaytish / 100), b0 = ex.rows.find(x => x.tur === 'Бриллиант') || ex.rows[0];
+        const seen = {}, rr = ex.rows.filter(x => x.qqs > 0.02 && !seen[x.jami] && (seen[x.jami] = 1));
+        const avg = rr.reduce((a, x) => a + (x.jami - x.qqs / kG), 0) / (rr.length || 1);
+        return `<div class="sm" style="font-weight:600;margin-top:12px">🔁 Metall (oltin) qiymati qayerdan chiqadi — teskari hisob</div>
+      <div class="mut" style="font-size:12px;margin:4px 0">Gavhar 1 gr narxi va QQS ni yozadi, lekin oltinni necha deb olganini aytmaydi. Uni shu ikki raqamdan topamiz. Misol: №${ex.no} · ${dmy(ex.sana)} · ${TRN(b0.tur)}.</div>
+      <ol style="padding-left:18px;margin:6px 0">
+        ${li(`<b>QQS qanday hisoblanadi.</b> QQS butun narxga emas, faqat <b>baza = narx − oltin qiymati</b> ga. 12% narx ichida → bazaning 12/112 = 10.71% i. Gavhar «${fmt(q.gavhar_qaytish)}% qaytadi» deb ${fmt(100 - q.gavhar_qaytish)}% ini qo'shgan → bazaning <b>${fmt(kG * 100, 2)}%</b> i (${fmt(kG, 4)}).`)}
+        ${li(`<b>Bazani topamiz.</b> Gavhar QQS = ${fmt(b0.qqs, 2)}. Bu bazaning ${fmt(kG * 100, 2)}% i bo'lsa: baza = ${fmt(b0.qqs, 2)} ÷ ${fmt(kG, 4)} = <b>${fmt(b0.qqs / kG, 2)}</b> $.`)}
+        ${li(`<b>Oddiy misol:</b> choychaqa 10% bo'lib, 5 ming berilgan bo'lsa — hisob 50 ming bo'lgan (5 ÷ 0.10). Bu ham xuddi shunday.`)}
+        ${li(`<b>Oltin qiymatini topamiz.</b> baza = narx − oltin → oltin = narx − baza = ${fmt(b0.jami, 2)} − ${fmt(b0.qqs / kG, 2)} = <b>${fmt(b0.jami - b0.qqs / kG, 2)}</b> $/gr (585).`)}
+        ${li(`<b>Boshqa turlar bilan tekshiramiz</b> — oltin hamma turda bir xil, shu raqam yana chiqishi kerak:`)}
+      </ol>
+      <table style="font-size:12px"><tr><th>Tur</th><th>Narx</th><th>QQS</th><th>Baza = QQS ÷ ${fmt(kG, 4)}</th><th>Oltin = narx − baza</th></tr>
+        ${rr.map(x => `<tr><td>${TRN(x.tur).replace(" / ko'zsiz", '')}</td><td>${fmt(x.jami, 2)}</td><td>${fmt(x.qqs, 2)}</td><td>${fmt(x.qqs / kG, 2)}</td><td><b>${fmt(x.jami - x.qqs / kG, 2)}</b></td></tr>`).join('')}
+        <tr><td colspan="4"><b>O'rtacha</b></td><td><b>${fmt(avg, 2)}</b></td></tr></table>
+      <ul style="padding-left:18px;margin:6px 0">
+        ${li(`Kichik farqlar — Gavhar QQS ni 0.01 gacha yaxlitlagani uchun.`)}
+        ${li(`Gavhar oltinni 585 uchun <b>${fmt(avg, 2)}</b> $/gr deb olgan = 999 uchun <b>${fmt(avg * 999 / 585, 2)}</b> $/gr. Shuni o'sha kungi haqiqiy narx (PQ-207 bo'yicha Soliq qo'mitasi narxi; Gavhar faylida MB narxi) bilan solishtiring.`)}
+        ${li(`Haqiqiy narx ≈ shu → to'g'ri. Haqiqiy narx <b>yuqori</b> → baza kichik, QQS kam bo'lishi kerak edi → Gavhar <b>ko'p olgan</b>. Haqiqiy narx <b>past</b> → Gavhar kam olgan (bizga foyda).`)}
+        ${li(`Kalkulyatorga MB kursi va oltin narxini yozsangiz — shu solishtirishni o'zi qiladi.`)}
+      </ul>`; })() : ''}
+      <div class="sm" style="font-weight:600;margin-top:12px">🪨 Tosh turi bo'yicha qoidalar</div>
+      <table style="margin-top:6px"><tr><th>Tovar</th><th>Narx turi</th><th>Ishchilik</th></tr>
+        <tr><td>Nomida «brilliant»</td><td>Brilliant</td><td>10.5</td></tr>
+        <tr><td>Nomida «waks / vaks», ko'zsiz</td><td>Vaks</td><td>8.5</td></tr>
+        <tr><td>Nomida «fianit»</td><td>Fianit</td><td>7.0</td></tr>
+        <tr><td>Nomida «dorika»</td><td>Dorika</td><td>11.0</td></tr>
+        <tr><td>Bilak uzuk (istisno seriyalardan tashqari)</td><td>Braslet</td><td>11.0</td></tr>
+        <tr><td>Zanjir (istisno seriyalardan tashqari)</td><td>Dorika</td><td>11.0</td></tr>
+        <tr><td>Istisno seriyalar: ${E((SOZ.seriya_tosh || []).join(', ') || '—')}</td><td>Tosh turi bo'yicha</td><td>tosh bo'yicha</td></tr>
+        <tr><td>Tosh turi yozilmagan</td><td>Detskiy</td><td>11.0</td></tr>
+        <tr><td>Van Cleef / Klif</td><td>Van Klif</td><td>11.0</td></tr></table>
+      <ul style="padding-left:18px;margin:6px 0">
+        ${li("Ishchilik qancha katta bo'lsa — QQS bazasi (narx − metall) shuncha katta, demak QQS ham katta: Dorika/Braslet/Detskiy/Van Klif > Brilliant > Vaks > Fianit.")}
+        ${li("Hamma turlar uchun lom va metall qiymati bir xil (bitta pul) — farq faqat ishchilikdan keladi.")}
+        ${li("Pulda Detskiy yoki Van Klif narxi bo'lmasa — Dorika narxi olinadi. Ko'zsiz — Vaks narxida.")}
+        ${li("QQS bazasi manfiy chiqsa (narx metall qiymatidan past) — QQS 0.")}
+      </ul>
+      <div class="sm" style="font-weight:600;margin-top:12px">🧾 Har bir tur uchun QQS — qadam-baqadam</div>
+      <ol style="padding-left:18px;margin:6px 0">
+        ${li("<b>Lom</b> = birja × 585 / 999.")}
+        ${li("<b>QQS siz narx</b> = lom + shu turning ishchiligi.")}
+        ${li("<b>QQS bazasi</b> = Gavhar 1 gr narxi − metall qiymati (585).")}
+        ${li("<b>To'liq QQS</b> = baza × 12 / 112.")}
+        ${li("<b>Gavhar qo'shgan</b> = Gavhar narxi − QQS siz narx (Gavhar " + fmt(q.gavhar_qaytish) + "% qaytadi deb, " + fmt(100 - q.gavhar_qaytish) + "% ni qo'shgan).")}
+        ${li("<b>Qonun bo'yicha</b> = to'liq QQS × " + fmt(100 - q.qonun_qaytish) + "% (" + fmt(q.qonun_qaytish) + "% qaytadi). Aniq formula: narx = (lom + ishchilik − k × metall) / (1 − k), k = 12/112 × " + fmt((100 - q.qonun_qaytish) / 100, 2) + ".")}
+        ${li("<b>Ortiqcha</b> = Gavhar qo'shgan − qonun bo'yicha ($/gr). Pul bo'yicha jami = shu puldan olingan har tur grammi × ortiqcha.")}
+      </ol>
+      ${ex ? `<div class="mut" style="font-size:12px;margin-top:6px">№${ex.no} · ${dmy(ex.sana)} · lom ${fmt(ex.rows[0].lom, 2)} · metall ${fmt(ex.metall_585, 2)} ($/gr)</div>
+      <table style="margin-top:4px;font-size:12px"><tr><th>Tur</th><th>Narx</th><th>Baza</th><th>To'liq</th><th>Gavhar</th><th>Qonun</th><th>Ort.</th></tr>
+        ${ex.rows.filter(x => x.qqs_qonun != null).map(x => `<tr><td>${TRN(x.tur).replace(' / ko\'zsiz', '')}</td><td>${fmt(x.jami, 2)}</td><td>${fmt(x.jami - ex.metall_585, 2)}</td>
+          <td>${fmt(x.qqs_toliq, 2)}</td><td>${fmt(x.qqs, 2)}</td><td>${fmt(x.qqs_qonun, 2)}</td>
+          <td class="${x.ortiqcha > 0.005 ? 'red' : ''}"><b>${x.ortiqcha > 0 ? '+' : ''}${fmt(x.ortiqcha, 2)}</b></td></tr>`).join('')}</table>
+      <div class="mut" style="font-size:11px;margin-top:4px">Narx — Gavhar 1 gr narxi · Baza — narx − metall · To'liq — baza × 12/112 · Gavhar — Gavhar qo'shgan QQS · Qonun — qonun bo'yicha · Ort. — ortiqcha ($/gr)</div>` : ''}
+      ${ex && br ? `<div class="sm" style="font-weight:600;margin-top:10px">📌 Misol: №${ex.no} · ${dmy(ex.sana)} · ${TRN(br.tur)}</div>
+      <table style="margin-top:6px"><tr><td>Lom (birja ${ex.birja} × 585/999)</td><td>${fmt(br.lom, 2)}</td></tr>
+        <tr><td>Ishchilik</td><td>${fmt(br.ishchilik, 2)}</td></tr>
+        <tr><td>Gavhar 1 gr narxi</td><td><b>${fmt(br.jami, 2)}</b></td></tr>
+        <tr><td>Metall qiymati (585)</td><td>${fmt(ex.metall_585, 2)}</td></tr>
+        <tr><td>QQS bazasi: ${fmt(br.jami, 2)} − ${fmt(ex.metall_585, 2)}</td><td>${fmt(br.jami - ex.metall_585, 2)}</td></tr>
+        <tr><td>To'liq QQS (12/112)</td><td>${fmt(br.qqs_toliq, 3)}</td></tr>
+        <tr><td>Gavhar qo'shgan (${fmt(100 - ex.gavhar)}%)</td><td>${fmt(br.qqs, 2)}</td></tr>
+        <tr><td>Qonun bo'yicha (${fmt(100 - ex.qonun)}%)</td><td>${fmt(br.qqs_qonun, 2)}</td></tr>
+        <tr><td><b>Ortiqcha, $/gr</b></td><td class="${br.ortiqcha > 0 ? 'red' : ''}"><b>${br.ortiqcha > 0 ? '+' : ''}${fmt(br.ortiqcha, 2)}</b></td></tr></table>` : ''}
+      <div class="mut" style="font-size:12px;margin-top:8px">Bu ma'lumot uchun hisob. Rasmiy talabdan oldin buxgalteriya yoki yurist bilan tasdiqlang. Fakturalar narx tekshiruvi Gavhar kiritgan 1 gr narxlari bo'yicha ishlashda davom etadi.</div>
+    </div>
+  </details>`;
+}
+/* ---------- QQS kalkulyator: pul, kurs, MB narxi → QQS to'g'rimi ---------- */
+const QC_ISH = {'Бриллиант': 10.5, 'Вакс': 8.5, 'Дорика': 11, 'Фианит': 7, 'Браслет': 11, 'Детский': 11, 'Ван Клиф': 11};
+const QC_T = ['Бриллиант', 'Вакс', 'Дорика', 'Фианит', 'Браслет', 'Детский', 'Ван Клиф'];
+function qcHtml() {
+  const P = (SOZ.qqs_pullar || []), q = SOZ.qqs;
+  const last = P.length ? P[P.length - 1] : null;
+  const inp = (id, lbl, val, ph) => `<div><label class="f">${lbl}</label><input id="${id}" inputmode="decimal" value="${val ?? ''}" placeholder="${ph || ''}" oninput="qcCalc()"></div>`;
+  return `<details class="card" style="margin-top:12px;padding:0">
+    <summary style="padding:14px 16px;font-weight:600;cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center">
+      <span>🔎 QQS tekshirish — kalkulyator</span><span class="mut">›</span></summary>
+    <div style="padding:0 16px 14px">
+    <div class="mut" style="font-size:12px;margin-top:4px">Pulni tanlang (yoki qo'lda yozing), MB oltin narxi va kursni kiriting — har tur bo'yicha Gavhar QQS to'g'rimi ko'rsatadi. Faqat hisob, hech narsa o'zgarmaydi.</div>
+    <label class="f" style="margin-top:8px">Pul (transh)</label>
+    <select id="qc_tr" onchange="qcFill()" style="width:100%"><option value="">— qo'lda kiritish —</option>
+      ${P.map(p => `<option value="${p.no}" ${last && p.no === last.no ? 'selected' : ''}>№${p.no} · ${dmy(p.sana)} · birja ${p.birja}</option>`).join('')}</select>
+    <div class="g2" style="margin-top:6px">
+      ${inp('qc_birja', 'Birja (999), $/gr', last ? last.birja : '', '129.46')}
+      ${inp('qc_kurs', 'MB dollar kursi, so\'m', '', '12 050')}
+      ${inp('qc_mb', 'MB oltin narxi (999), so\'m/gr', '', '1 660 000')}
+      ${inp('qc_met', 'yoki metall (585), $/gr', '', 'bo\'sh — MB dan')}
+      ${inp('qc_qon', 'Qonun bo\'yicha qaytadi, %', q.qonun_qaytish)}
+      ${inp('qc_gav', 'Gavhar hisoblagan, %', q.gavhar_qaytish)}
+    </div>
+    <div class="rw" style="gap:6px;margin-top:6px;justify-content:flex-start;flex-wrap:wrap"><span class="mut" style="font-size:12px">Qonun:</span>
+      ${[80, 50, 0].map(v => `<button class="btn2" onclick="$('#qc_qon').value=${v};qcCalc()">${v}%</button>`).join('')}
+      <span class="mut" style="font-size:12px;margin-left:6px">Gavhar:</span>
+      ${[50, 80].map(v => `<button class="btn2" onclick="$('#qc_gav').value=${v};qcCalc()">${v}%</button>`).join('')}</div>
+    <label class="f" style="margin-top:8px">Gavhar 1 gr narxlari, $</label>
+    <div class="g2">${QC_T.map(t => `<div><label class="f" style="margin-top:2px">${TRN(t)}</label><input class="qc_p" data-t="${t}" inputmode="decimal" oninput="qcCalc()"></div>`).join('')}</div>
+    <div id="qcout" style="margin-top:10px"></div>
+    </div>
+  </details>`;
+}
+function qcNum(id) { const e = $(id); if (!e) return null; const v = parseFloat(String(e.value).replace(/\s/g, '').replace(',', '.')); return isNaN(v) ? null : v; }
+function qcFill() {
+  const no = +$('#qc_tr').value, p = (SOZ.qqs_pullar || []).find(x => x.no === no);
+  if (!p) { qcCalc(); return; }
+  $('#qc_birja').value = p.birja;
+  document.querySelectorAll('.qc_p').forEach(i => { const r = (p.rows || []).find(x => x.tur === i.dataset.t); i.value = r ? r.jami : ''; });
+  $('#qc_met').value = p.kiritilgan || '';
+  qcCalc();
+}
+function qcCalc() {
+  const out = $('#qcout'); if (!out) return;
+  const birja = qcNum('#qc_birja'), kurs = qcNum('#qc_kurs'), mb = qcNum('#qc_mb'), metIn = qcNum('#qc_met');
+  const qon = qcNum('#qc_qon') ?? 80, gav = qcNum('#qc_gav') ?? 50, st = (SOZ.qqs.stavka || 12) / 100;
+  if (!birja) { out.innerHTML = '<div class="mut">Birja narxini kiriting.</div>'; return; }
+  const kG = st / (1 + st) * (1 - gav / 100), kL = st / (1 + st) * (1 - qon / 100);
+  const lom = Math.round(birja * 585 / 999 * 100) / 100;
+  const pr = {}; document.querySelectorAll('.qc_p').forEach(i => { const v = parseFloat(String(i.value).replace(',', '.')); if (!isNaN(v)) pr[i.dataset.t] = v; });
+  // Gavhar ishlatgan metall — teskari hisob: C = narx − QQS ÷ kG
+  const rev = QC_T.filter(t => pr[t] != null && pr[t] - lom - QC_ISH[t] > 0.02 && kG > 0)
+    .map(t => ({t, P: pr[t], Q: pr[t] - lom - QC_ISH[t], C: pr[t] - (pr[t] - lom - QC_ISH[t]) / kG}));
+  const uniq = rev.filter((r, i) => rev.findIndex(x => Math.abs(x.P - r.P) < 1e-9) === i);
+  const Cg = uniq.length ? uniq.reduce((a, r) => a + r.C, 0) / uniq.length : null;
+  let C = null, src = '';
+  if (metIn) { C = metIn; src = 'siz kiritgan'; }
+  else if (mb && kurs) { C = mb * 585 / 999 / kurs; src = `MB: ${fmt(mb)} × 585 / 999 ÷ ${fmt(kurs)}`; }
+  else if (Cg) { C = Cg; src = 'Gavhar narxidan (teskari hisob)'; }
+  let h = `<div style="background:var(--bg);border-radius:12px;padding:10px 12px;font-size:13px">
+    <div><b>1) Lom</b> = ${fmt(birja, 2)} × 585 / 999 = <b>${fmt(lom, 2)}</b> $/gr</div>`;
+  if (uniq.length) h += `<div style="margin-top:6px"><b>2) Gavhar ishlatgan metall qiymati</b> (teskari hisob, Gavhar ${fmt(gav)}% qaytadi deb):<br>
+      <span class="mut">metall = narx − Gavhar QQS ÷ (12/112 × ${fmt((100 - gav) / 100, 2)}) = narx − QQS ÷ ${fmt(kG, 4)}</span>
+      ${uniq.map(r => `<div>${TRN(r.t)}: ${fmt(r.P, 2)} − ${fmt(r.Q, 2)} ÷ ${fmt(kG, 4)} = <b>${fmt(r.C, 2)}</b></div>`).join('')}
+      <div>O'rtacha: <b>${fmt(Cg, 2)}</b> $/gr (999 da ${fmt(Cg * 999 / 585, 2)})${kurs ? ` → MB narxi bo'lishi kerak: ${fmt(Cg * 999 / 585 * kurs, 0)} so'm/gr` : ''}. Farqlar — QQS 0.01 gacha yaxlitlangani uchun.</div></div>`;
+  else h += `<div style="margin-top:6px" class="mut">Gavhar narxida QQS yo'q yoki narxlar kiritilmagan.</div>`;
+  if (C) {
+    h += `<div style="margin-top:6px"><b>3) Tekshiruv uchun metall</b> = <b>${fmt(C, 2)}</b> $/gr <span class="mut">(${src})</span>`;
+    if (Cg && (mb && kurs || metIn)) { const d = C - Cg; h += `<br>${Math.abs(d) < 0.15 ? '✅ Gavhar ishlatgan metall shu bilan mos' : d > 0 ? `⚠ Gavhar metallni ${fmt(d, 2)} $/gr <b>past</b> olgan → QQS bazasi katta → QQS ko'p` : `ℹ Gavhar metallni ${fmt(-d, 2)} $/gr yuqori olgan → QQS kam (bizga foyda)`}`; }
+    h += `</div><table style="margin-top:8px;font-size:12px"><tr><th>Tur</th><th>Narx</th><th>Baza</th><th>To'liq</th><th>Gavhar</th><th>Qonun</th><th>Ort.</th><th></th></tr>`;
+    let shown = {};
+    QC_T.forEach(t => {
+      if (pr[t] == null) return;
+      const base = lom + QC_ISH[t], Pg = pr[t], Qg = Pg - base;
+      let Pl = kL < 1 ? (base - kL * C) / (1 - kL) : base; if (Pl < C) Pl = base;
+      const full = Math.max(Pg - C, 0) * st / (1 + st), Ql = Pl - base, o = Pg - Pl;
+      h += `<tr><td>${TRN(t).replace(" / ko'zsiz", '')}</td><td>${fmt(Pg, 2)}</td><td>${fmt(Pg - C, 2)}</td><td>${fmt(full, 2)}</td><td>${fmt(Qg, 2)}</td><td>${fmt(Ql, 2)}</td>
+        <td class="${o > 0.015 ? 'red' : ''}"><b>${o > 0 ? '+' : ''}${fmt(o, 2)}</b></td><td>${Math.abs(o) <= 0.015 ? '✅' : o > 0 ? '❌' : 'ℹ'}</td></tr>`;
+    });
+    h += `</table><div class="mut" style="font-size:11px;margin-top:4px">Baza = narx − metall · To'liq = baza × 12/112 · Gavhar = narx − (lom + ishchilik) · Qonun — ${fmt(qon)}% qaytsa narxga qo'shiladigan QQS · Ort. — ortiqcha $/gr</div>`;
+    const no = +$('#qc_tr').value;
+    if (no && (metIn || (mb && kurs))) h += `<button class="btn2" style="margin-top:8px" onclick="qcSave(${no}, ${C.toFixed(4)})">💾 Shu metall qiymatini №${no} pulga saqlash</button>`;
+  } else h += `<div class="mut" style="margin-top:6px">MB oltin narxi va kursni (yoki metall qiymatini) kiriting.</div>`;
+  out.innerHTML = h + '</div>';
+}
+async function qcSave(no, C) {
+  try { await api('/api/qqs/metall', {no, metall_585: C}); haptic('success'); toast(`№${no} ga saqlandi`); loadAdmin(ADM); }
+  catch (e) { toast(e.message); }
+}
+async function qqsMet(no) {
+  try { await api('/api/qqs/metall', {no, metall_585: $('#qmet' + no).value}); haptic('success'); toast('Saqlandi'); loadAdmin(ADM); }
+  catch (e) { toast(e.message); }
+}
+async function qqsSave() {
+  const body = {stavka: $('#qq_st').value, qonun_qaytish: $('#qq_qon').value, gavhar_qaytish: $('#qq_gav').value};
+  try { await api('/api/qqs', body); haptic('success'); toast('QQS sozlamasi saqlandi'); QQSF = null; loadAdmin(ADM); }
+  catch (e) { toast(e.message); }
 }
 async function sozSeriya() {
   try { await api('/api/seriya', {seriya: $('#seriya').value}); haptic('success'); toast('Saqlandi — fakturalar qayta hisoblandi'); invalidate(); loadAdmin(ADM); }
