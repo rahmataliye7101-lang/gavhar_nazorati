@@ -239,6 +239,25 @@ RU_MONTH = {"январ": 1, "феврал": 2, "март": 3, "апрел": 4, 
             "сентябр": 9, "октябр": 10, "ноябр": 11, "декабр": 12}
 
 
+# Gavhar эмас — ўтказиб юборилган қаторлар (бот ва ҳисобот хабарида кўрсатилади)
+SKIP = {"boshqa": 0, "nomlar": set(), "tilla_emas": 0}
+GAVHAR_MODEL = re.compile(r"\b[A-Z]{3}\d{6}\b")
+
+
+def skip_reset():
+    SKIP.update(boshqa=0, nomlar=set(), tilla_emas=0)
+
+
+def skip_matn():
+    L = []
+    if SKIP["boshqa"]:
+        nm = ", ".join(sorted(SKIP["nomlar"])[:5]) or "номаълум"
+        L.append(f"🚫 Gavhar эмас — {SKIP['boshqa']} та товар ўтказиб юборилди (таъминотчи: {nm}).")
+    if SKIP["tilla_emas"]:
+        L.append(f"🚫 Тилла товари эмас (номида «Proba 585» йўқ) — {SKIP['tilla_emas']} та қатор ўтказиб юборилди.")
+    return L
+
+
 def read_gavhar_sheet(ws, warnings):
     """Gavhar Jewel Group нинг ўз фактураси (INVOICE №GVR-..., «Нархи 1 грамм учун» устуни)."""
     rows = list(ws.iter_rows(values_only=True))
@@ -266,6 +285,10 @@ def read_gavhar_sheet(ws, warnings):
     c_narx = col("нархи 1 грамм", hdr)
     c_jami = col("умумий нарх", hdr)
     head = " ".join(norm(c) for r in rows[:hi] for c in r if c)
+    begona = None
+    if "gavhar" not in head.lower() and "гавҳар" not in head.lower() and "гавхар" not in head.lower():
+        m = re.search(r"(ООО|OOO|МЧЖ|MChJ|ЧП|ЯТТ)\s*[«\"']?([^»\"'.]{2,40})", head)
+        begona = (m.group(2).strip() if m else ws.title.strip())[:40]
     m = re.search(r"№\s*([A-Za-zА-Яа-я0-9][\w\-/]*)", head)
     faktura = m.group(1) if m else ""
     sana = None
@@ -310,6 +333,13 @@ def read_gavhar_sheet(ws, warnings):
             warnings.append(f"ЖАМИ грамм {jami[0]}, қаторлар йиғиндиси {sum_g:.2f}")
         if jami[1] is not None and abs(jami[1] - sum_s) > 0.5:
             warnings.append(f"ЖАМИ сумма {jami[1]:,.2f}, қаторлар йиғиндиси {sum_s:,.2f}")
+    # Gavhar фактура рақами доим GVR-… (GVR-27102026). Бошқа рақам (мас. DG-000000795) ва «Gavhar Jewel» ёзуви йўқ бўлса — бегона
+    if not begona and faktura and not faktura.upper().startswith("GVR") and "gavhar jewel" not in head.lower():
+        begona = f"фактура № {faktura}"
+    if begona:  # Gavhar эмас — бошқа таъминотчи фактураси: ўқимаймиз
+        SKIP["boshqa"] += len(out)
+        SKIP["nomlar"].add(begona)
+        return []
     if not sana:
         warnings.append(f"{ws.title}: фактура санаси топилмади")
     return out
@@ -357,6 +387,11 @@ def read_invoice(path, warnings=None):
                 continue
             tam = norm(g("taminotchi"))
             if tam and "gavhar" not in tam.lower():
+                SKIP["boshqa"] += 1
+                SKIP["nomlar"].add(tam[:40])
+                continue
+            if not ("proba" in nomi.lower() or "585" in nomi or "проба" in nomi.lower()):
+                SKIP["tilla_emas"] += 1  # тилла товар эмас (номида проба йўқ) — ўтказамиз
                 continue
             soni = to_num(g("soni")) or 1
             gr = to_num(g("gramm")) or gramm_from_name(nomi)
@@ -599,7 +634,7 @@ def returns_stats(returns):
 # ---------------- тур аниқлаш ----------------
 # Gavhar фактураларидан аниқланди: шу серия (модел олд қўшимчаси) билак узук/занжирлар ТОШ НАРХИДА (вакс → Вакс нархи),
 # қолганлари (QQG, ZQG …) — Браслет/Дорика нархида. Admin да ўзгартирса бўлади (cfg["seriya_tosh"]).
-SERIYA_TOSH_DEFAULT = ["QSG", "QSW", "QSF", "QQF", "ZSG"]
+SERIYA_TOSH_DEFAULT = ["QSG", "QSW", "QSF", "QQF", "ZSG", "QQW"]
 SERIYA_TOSH = set(SERIYA_TOSH_DEFAULT)
 SERIYA_RE = re.compile(r"\b([A-Z]{2,4})\d{3,}")
 
@@ -671,6 +706,7 @@ def compute(cfg, ledger, returns=None):
     out = []
     for i in order:
         r = dict(ledger[i])
+        r["_i"] = i  # реестрдаги ўрни — юкланиш тартиби (охирги юкланган — энг катта)
         r["tur"] = tur(r["nomi"], r["kategoriya"])
         g = to_num(r["gramm"]) or 0.0
         s = to_num(r["summa"])
@@ -1486,6 +1522,7 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
     seen = {key(r) for r in ledger}
     added, dup, new_rows = 0, 0, []
     warns, file_keys = [], set()
+    skip_reset()
     for f in files:
         for r in read_invoice(f, warns):
             k = key(r)
@@ -1624,6 +1661,7 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
                 write_invoice_report(str(Path(out_path).with_name(f"Faktura_{safe}.xlsx")), fno, fil, sana_t, rs, trn, tmap)
             except Exception as e:  # ҳисобот ёзилмаса ҳам матн чиқсин
                 L.append(f"   (фактура Excel ёзилмади: {e})")
+    L += skip_matn()
     if warns:
         L.append("🧮 Фактура арифметикасида хато:\n" + "\n".join("   • " + w for w in warns[:15]))
     if new_res:
@@ -1850,6 +1888,7 @@ def oylik_tekshir(cfg, ledger, returns, files, out_path):
     Ой бошигача юкланган фактуралар + шу ойнинг приходи (файлдан) → 1, 2-пул ва возвратлар бўйича қайта ҳисоб."""
     import copy
     warns, frows = [], []
+    skip_reset()
     for f in files:
         frows += read_invoice(f, warns)
     seen, uniq = set(), []
@@ -1922,6 +1961,7 @@ def oylik_tekshir(cfg, ledger, returns, files, out_path):
         L.append("✅ Хато йўқ — ҳамма нархлар тўғри")
     for q in qism_stats(cfg):
         L.append(f"↩️ Возврат {q['no']}-қисм: берилди {q['berilgan']:,.0f} $, қолди {q['qolgan']:,.0f} $")
+    L += skip_matn()
     if warns:
         L.append(f"🧮 Файлда арифметика хатоси: {len(warns)} та")
     oxir = max((r["sana"] for r in mr if r.get("sana")), default="")

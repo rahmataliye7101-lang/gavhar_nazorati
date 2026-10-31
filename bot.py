@@ -113,7 +113,17 @@ def ensure_data():
 
 
 def load_cfg():
-    return json.loads(TRANSH.read_text(encoding="utf-8"))
+    cfg = json.loads(TRANSH.read_text(encoding="utf-8"))
+    # бир марталик: Admin да сақланган сериялар рўйхатига QQW қўшилади (Gavhar QQW ни Вакс нархида ёзади)
+    if cfg.get("seriya_tosh") is not None and not cfg.get("seriya_qqw"):
+        if "QQW" not in [x.upper() for x in cfg["seriya_tosh"]]:
+            cfg["seriya_tosh"].append("QQW")
+        cfg["seriya_qqw"] = True
+        try:
+            save_cfg(cfg)
+        except Exception:
+            pass
+    return cfg
 
 
 def save_cfg(cfg):
@@ -1236,6 +1246,7 @@ async def document(update: Update, ctx):
         bk = BACKUP / f"ledger_{stamp}.csv"
         shutil.copy(LEDGER, bk)
         try:
+            nazorat.skip_reset()
             rows = await asyncio.to_thread(nazorat.read_invoice, str(path))
         except Exception as e:
             log.exception("read error")
@@ -1261,6 +1272,11 @@ async def document(update: Update, ctx):
                     f"📅 Бу ойлик/давр приходи кўринади ({len(invs)} та фактура, {nazorat._dmy(ds[0])} – {nazorat._dmy(ds[-1])}).\n"
                     "Реестрга ҚЎШМАЙМАН — фақат текшириб хулоса бераман.")
                 return await handle_oylik_file(update, path)
+        if not rows and (nazorat.SKIP["boshqa"] or nazorat.SKIP["tilla_emas"]):
+            bk.unlink(missing_ok=True)
+            return await update.message.reply_text(
+                "🚫 Бу Gavhar фактураси эмас — текширмадим ва реестрга қўшмадим.\n" + "\n".join(nazorat.skip_matn())
+                + "\n\nБот фақат Gavhar Gold zavod фактураларини текширади.")
         if not rows:
             return await update.message.reply_text(
                 "❌ Бу файлда фактура топилмади.\n"

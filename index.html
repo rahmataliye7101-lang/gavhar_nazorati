@@ -392,7 +392,7 @@ function renderFaktura() {
   const sum = (k) => FD.groups.reduce((s, x) => s + (x[k] || 0), 0);
   const all = {no: 'all', sana: null, summa: sum('summa'), used: sum('used'), left: sum('left'), count: sum('count'), n: sum('n'),
     gramm: sum('gramm'), fakt: sum('fakt'), hisob: sum('hisob'), farq: sum('farq'), bad: sum('bad'), holat: '',
-    items: FD.groups.flatMap(x => x.items).sort((a, b) => (b.sana || '').localeCompare(a.sana || ''))};
+    items: FD.groups.flatMap(x => x.items).sort((a, b) => (b.yuk ?? -1) - (a.yuk ?? -1))};
   all.pct = all.summa ? all.used / all.summa * 100 : 0;
   const g = FSel === 'all' ? all : (FD.groups.find(x => x.no === FSel) || FD.groups[0]);
   el.innerHTML = upCard() + filterBar(false) + `
@@ -425,12 +425,17 @@ function renderFaktura() {
 }
 /* ---------- DO'KON QIDIRUV ---------- */
 let FQ = '', FV = 'inv', CURG = null;
-const nk = s => L(s || '').toLowerCase().replace(/[ʻʼ’'`‘]/g, '').replace(/filiali?/g, '').replace(/ye/g, 'e').replace(/[^a-z0-9]+/g, ' ').trim();
+const nk = s => L(s || '').toLowerCase().replace(/[ʻʼ’'`‘]/g, '').replace(/filiali?|mini do.?koni|do.?koni/g, '').replace(/ye/g, 'e')
+  .replace(/x/g, 'h').replace(/q/g, 'k').replace(/g'/g, 'g').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+const nkz = s => nk(s).replace(/ /g, '');  // бўшлиқсиз: «andijon1» = «Андижон-1»
+const nks = s => nkz(s).replace(/[aeiouy]/g, '');  // унлиларсиз: «kattakurgon» = «Каттақўрғон»
 function listFaktura() {
   const box = $('#flist'); if (!box || !CURG) return;
-  const q = nk(FQ);
-  const all = CURG.items.concat(FD.other || []);
-  const items = all.filter(a => !q || nk(a.filial + ' ' + a.faktura).includes(q) || (a.faktura || '').toLowerCase().includes(FQ.trim().toLowerCase()));
+  const q = nk(FQ), qz = nkz(FQ), qs_ = nks(FQ);
+  // қидирувда — ҳамма пуллар бўйича (танланган транш эмас); бўлмаса — танланган транш
+  const base = q ? FD.groups.flatMap(x => x.items).concat(FD.other || []) : CURG.items.concat(FD.other || []);
+  const seen = new Set(), all = base.filter(a => !seen.has(a.key) && seen.add(a.key)).sort((a, b) => (b.yuk ?? -1) - (a.yuk ?? -1));
+  const items = all.filter(a => !q || nk(a.filial + ' ' + a.faktura).includes(q) || nkz(a.filial).includes(qz) || (qs_.length >= 3 && nks(a.filial).includes(qs_)) || (a.faktura || '').toLowerCase().includes(FQ.trim().toLowerCase()));
   if (FV === 'dok') {
     const m = {};
     items.forEach(a => { const k = a.filial || '—'; const x = m[k] = m[k] || {f: k, n: 0, fakt: 0, farq: 0, bad: 0, oxirgi: ''};
@@ -444,7 +449,7 @@ function listFaktura() {
     box.querySelectorAll('.dok').forEach(c => c.onclick = () => { FQ = c.dataset.f; FV = 'inv'; renderFaktura(); window.scrollTo(0, $('#fq').getBoundingClientRect().top + scrollY - 80); });
     return;
   }
-  box.innerHTML = `${q ? `<div class="mut" style="margin:0 4px 8px">${items.length} ta faktura topildi</div>` : ''}` +
+  box.innerHTML = `<div class="mut" style="margin:0 4px 8px">${q ? `${items.length} ta faktura topildi — barcha transhlar bo'yicha${F.oy ? ' (tanlangan oy ichida)' : ''}` : 'Oxirgi yuklangan fakturalar tepada'}</div>` +
     (items.length ? items.slice(0, 200).map(a => invCard(a)).join('') + (items.length > 200 ? `<div class="card empty">… yana ${items.length - 200} ta — qidiruvni aniqlashtiring</div>` : '')
       : `<div class="card empty">${q ? 'Hech narsa topilmadi' : 'Bu transh bo\'yicha faktura yo\'q'}</div>`);
   box.querySelectorAll('.inv').forEach(c => c.onclick = e => {
@@ -776,7 +781,7 @@ function sozlamaHtml() {
       <div class="mut" style="font-size:12px;margin-top:10px">Vozvrat ro'yxatini (Excel) yangilash: Faktura → 📤 Excel yuklash → «Vozvrat ro'yxati».</div>
       <div class="sm" style="font-weight:600;margin-top:16px">💍 Bilak uzuk va zanjir seriyalari</div>
       <div class="mut" style="font-size:12px;margin:4px 0 6px">Bu seriyalar <b>tosh narxida</b> hisoblanadi (vaks → Vaks narxi). Qolgan bilak uzuklar — Braslet narxi, zanjirlar — Dorika narxi.</div>
-      <div class="rw" style="gap:8px"><input id="seriya" value="${esc((SOZ.seriya_tosh || []).join(', '))}" placeholder="QSG, QSW, QQF, ZSG" style="flex:1">
+      <div class="rw" style="gap:8px"><input id="seriya" value="${esc((SOZ.seriya_tosh || []).join(', '))}" placeholder="QSG, QSW, QSF, QQF, ZSG, QQW" style="flex:1">
         <button class="btn2" onclick="sozSeriya()">Saqlash</button></div>
     </div>
     ${qqsAdminHtml()}
@@ -812,7 +817,7 @@ function qoidalarHtml() {
         <tr><td><b>Zanjir</b> (tosh turiga qaramay)</td><td><b>Dorika</b></td></tr>
         <tr><td><b>Istisno seriyalar:</b> ${E(ser)}</td><td><b>Tosh narxi</b> (vaks → Vaks)</td></tr>
       </table>
-      <div class="mut" style="font-size:12px;margin-top:6px">Gavhar fakturalaridan: QQG bilak uzuk va ZQG zanjir — Braslet/Dorika narxida; QSG, QSW, QQF bilak uzuk va ZSG zanjir — Vaks narxida. Seriyalar ro'yxatini yuqorida o'zgartirasiz.</div></details>
+      <div class="mut" style="font-size:12px;margin-top:6px">Gavhar fakturalaridan: QQG bilak uzuk va ZQG zanjir — Braslet/Dorika narxida; QSG, QSW, QSF, QQF, QQW bilak uzuk va ZSG zanjir — Vaks narxida. Seriyalar ro'yxatini yuqorida o'zgartirasiz.</div></details>
     <details style="margin-top:8px"><summary style="font-weight:600;cursor:pointer">🔎 Faktura qanday tekshiriladi</summary>
       <ol style="padding-left:18px;margin:8px 0;font-size:13px">
         ${li('<b>Pul narxi:</b> faktura sanasigacha berilgan, yopilmagan va «Tekshiruvda» belgilangan <b>eng eski pul</b>. Tovar summasi shu puldan ayiriladi, tugasa keyingisiga o\'tadi.')}

@@ -139,6 +139,7 @@ def invoices(rows, cfg):
             a["transh"] = transh_no(r)
         a.setdefault("trs", set()).update(int(x) for x in re.findall(r"№(\d+)", str(r.get("transh") or "")))
         a["n"] += 1
+        a["yuk"] = max(a.get("yuk", -1), r.get("_i", -1))  # юкланиш тартиби
         if r.get("transh") == "возврат":
             a["vozvrat"] += 1
             a.setdefault("vlist", []).append(dict(tur=r["tur"], gramm=r2(r["gramm"]), narx=r2(r.get("hisob_1gr")), summa=r2(r["summa"]),
@@ -172,7 +173,7 @@ def invoices(rows, cfg):
         for f in ("gramm", "fakt", "hisob", "farq", "qimmat"):
             a[f] = r2(a[f])
         out.append(a)
-    out.sort(key=lambda a: (a["sana"] or "", a["faktura"]), reverse=True)
+    out.sort(key=lambda a: (a.get("yuk", -1), a["sana"] or ""), reverse=True)  # охирги юкланган — тепада
     return out
 
 
