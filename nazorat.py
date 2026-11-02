@@ -664,7 +664,7 @@ def holat_royxat(cfg, trs, v1=None, rows=None):
         x = st.get(t["no"]) or {}
         used, left = x.get("used"), x.get("left")
         if not t.get("faol", True):
-            k, m = "off", "⏸ Ўчирилган — текширувга кирмайди"
+            k, m = "off", "⏸ Ўчирилган — текширувга кирмайди" + (f" (олдин {_dmy(t['yopilgan_sana'])} да ёпилган эди)" if t.get("yopilgan_sana") else " (ёпилмаган — фақат ўчирилган)")
         elif t.get("faqat_tekshiruv"):
             k, m = "eski", "📅 Фақат эски приход текшируви учун"
         elif t.get("yopilgan_sana"):
@@ -691,7 +691,7 @@ def holat_royxat(cfg, trs, v1=None, rows=None):
     v = cfg.get("vozvrat_1") or {}
     if v1 and (v1.get("n") or v.get("yopilgan_sana") or v.get("faol") is False):
         if v.get("faol") is False:
-            k, m = "off", "⏸ Ўчирилган — текширувга кирмайди"
+            k, m = "off", "⏸ Ўчирилган — текширувга кирмайди" + (f" (олдин {_dmy(v['yopilgan_sana'])} да якунланган эди)" if v.get("yopilgan_sana") else " (якунланмаган — фақат ўчирилган)")
         elif v.get("yopilgan_sana"):
             k, m = "yopiq", f"🔒 Якунланган {_dmy(v['yopilgan_sana'])}"
         elif (v1.get("qolgan_summa") or 0) <= 1:
@@ -702,7 +702,7 @@ def holat_royxat(cfg, trs, v1=None, rows=None):
                         used=v1.get("berilgan_summa"), left=v1.get("qolgan_summa"), kod=k, matn=m))
     for q in qism_stats(cfg):
         if q["faol"] is False:
-            k, m = "off", "⏸ Ўчирилган — текширувга кирмайди"
+            k, m = "off", "⏸ Ўчирилган — текширувга кирмайди" + (f" (олдин {_dmy(q['yopilgan'])} да якунланган эди)" if q["yopilgan"] else " (якунланмаган — фақат ўчирилган)")
         elif q["yopilgan"]:
             k, m = "yopiq", f"🔒 Якунланган {_dmy(q['yopilgan'])}"
         elif q["qolgan"] <= 1:

@@ -199,7 +199,7 @@ function royxatHtml(R) {
       ${x.gavhar ? `<div style="font-size:12px;margin-top:3px;${/⚠/.test(x.gavhar) ? 'color:var(--red)' : ''}">${E(x.gavhar)}</div>` : ''}
       <div class="mut" style="font-size:12px;margin-top:2px">${E(x.matn.replace(/^\S+\s/, ''))}${x.used != null && x.left != null ? ` · ishlatildi ${usd(x.used)} · qoldi ${usd(x.left)}` : x.summa ? ` · ${usd(x.summa)}` : ''}</div>
     </div>`).join('')}
-    <div class="mut" style="font-size:11px;margin-top:6px">🔒 Yopilgan/yakunlangan — shu sanadan keyingi fakturalarga ishlatilmaydi. ⏸ O'chirilgan — tekshiruvga umuman kirmaydi (Admin → Tekshiruv sozlamasi).</div>
+    <div class="mut" style="font-size:11px;margin-top:6px">🔒 Yopilgan/yakunlangan — shu sanadan keyingi fakturalarga ishlatilmaydi. ⏸ O'chirilgan — tekshiruvga umuman kirmaydi, undan ishlatilgan pul ham 0 ko'rinadi (Admin → Tekshiruv sozlamasi). Yakunlash uchun avval yoqing, keyin Holat → Vozvrat → «Vozvratni yakunlash».</div>
     </div></details>`;
 }
 async function loadHolat() {
