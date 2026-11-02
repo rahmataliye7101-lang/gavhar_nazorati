@@ -622,6 +622,108 @@ def qism_stats(cfg):
             for q in cfg.get("vozvrat_qismlar") or []]
 
 
+def gavhar_pullar(rows, cfg):
+    """Gavhar ҳар пул нархини қачондан-қачонгача ёзган (фактура нархидан): {пул №: {birinchi, oxirgi, n, summa}}.
+    Gavhar пулни қаерда «ёпгани» — охирги шу нархда ёзган санаси, кейин бошқа пул нархига ўтган бўлса."""
+    ch = cfg.get("chegara_usd_gr", 0.3)
+    trs = sorted([t for t in cfg.get("transhlar", []) if t.get("faol", True)], key=lambda t: (t["sana"], t["no"]))
+    out = {}
+    for r in rows:
+        f, sana = r.get("fakt_1gr"), r.get("sana")
+        if f is None or not sana or r.get("transh") == "возврат":
+            continue
+        tur_ = "Вакс" if r.get("tur") == "Кузсиз" else r.get("tur")
+        hit = []
+        for t in trs:
+            if t["sana"] > sana:
+                continue
+            p = t["narxlar"].get(tur_) or t["narxlar"].get("Дорика")
+            if p and abs(f - p) <= ch:
+                hit.append(t["no"])
+        if len(hit) != 1:  # бир нечта пул нархи бир хил — аниқ эмас
+            continue
+        x = out.setdefault(hit[0], dict(birinchi=sana, oxirgi=sana, n=0, summa=0.0))
+        x["birinchi"] = min(x["birinchi"], sana); x["oxirgi"] = max(x["oxirgi"], sana)
+        x["n"] += 1; x["summa"] += r.get("summa") or 0
+    sana_max = max((r.get("sana") or "" for r in rows), default="")
+    tsana = {t["no"]: (t["sana"], t["no"]) for t in trs}
+    for no, x in out.items():
+        # кейинги (санаси кейин) пул нархида шу пулдан кейин ҳам ёзилган бўлса — Gavhar бу пулни охирги ишлатган кунида ёпган
+        keyin = [n for n, y in out.items() if n != no and tsana.get(n, ("",)) > tsana.get(no, ("",)) and y["oxirgi"] > x["oxirgi"]]
+        x["yopdi"] = bool(keyin) and x["oxirgi"] < sana_max
+        x["keyingi"] = min(keyin, key=lambda n: tsana[n]) if keyin else None
+    return out
+
+
+def holat_royxat(cfg, trs, v1=None, rows=None):
+    """Ҳамма пуллар ва возвратлар — ҳолати аниқ: 🟢 очиқ / 🔒 ёпилган / ✅ тугаган / ⏸ ўчирилган / 📅 фақат эски приход."""
+    st = {t["no"]: t for t in trs}
+    gp = gavhar_pullar(rows, cfg) if rows else {}
+    out = []
+    for t in sorted(cfg.get("transhlar", []), key=lambda t: (t["sana"], t["no"])):
+        x = st.get(t["no"]) or {}
+        used, left = x.get("used"), x.get("left")
+        if not t.get("faol", True):
+            k, m = "off", "⏸ Ўчирилган — текширувга кирмайди"
+        elif t.get("faqat_tekshiruv"):
+            k, m = "eski", "📅 Фақат эски приход текшируви учун"
+        elif t.get("yopilgan_sana"):
+            k, m = "yopiq", f"🔒 Ёпилган {_dmy(t['yopilgan_sana'])} — кейинги фактураларга ишлатилмайди"
+        elif left is not None and left <= 1:
+            k, m = "tugagan", "✅ Тугаган"
+        else:
+            k, m = "ochiq", "🟢 Очиқ — ишлатиляпти" if (used or 0) > 0 else "🟢 Очиқ — навбатда"
+        g = gp.get(t["no"])
+        gm = None
+        if g:
+            gm = f"🏭 Gavhar шу пул нархида: {_dmy(g['birinchi'])} – {_dmy(g['oxirgi'])}, {g['n']} та товар"
+            if g["yopdi"]:
+                gm += f" → {_dmy(g['oxirgi'])} да ёпиб, №{g['keyingi']} нархига ўтган"
+                if left is not None and left > max(1000, 0.01 * t["summa_usd"]) and k not in ("tugagan",):
+                    gm += f". ⚠ Бизнинг ҳисобда шу пулда {left:,.0f} $ қолган эди — Gavhar билан солиштиринг"
+            elif k == "tugagan":
+                gm += ". ⚠ Бизда пул тугаган, Gavhar ҳали шу нархда ёзяпти"
+        elif t.get("faol", True) and not t.get("faqat_tekshiruv") and rows is not None:
+            gm = "🏭 Gavhar ҳали шу пул нархида фактура ёзмаган"
+        out.append(dict(tur="pul", no=t["no"], sana=t["sana"], nom=f"Пул №{t['no']} · {_dmy(t['sana'])} · биржа {t['birja_999']:g}",
+                        summa=t["summa_usd"], used=used, left=left, kod=k, matn=m, gavhar=gm,
+                        g_yopdi=bool(g and g["yopdi"]), g_oxirgi=g["oxirgi"] if g else None))
+    v = cfg.get("vozvrat_1") or {}
+    if v1 and (v1.get("n") or v.get("yopilgan_sana") or v.get("faol") is False):
+        if v.get("faol") is False:
+            k, m = "off", "⏸ Ўчирилган — текширувга кирмайди"
+        elif v.get("yopilgan_sana"):
+            k, m = "yopiq", f"🔒 Якунланган {_dmy(v['yopilgan_sana'])}"
+        elif (v1.get("qolgan_summa") or 0) <= 1:
+            k, m = "tugagan", "✅ Тугаган"
+        else:
+            k, m = "ochiq", "🟢 Очиқ — ишлатиляпти"
+        out.append(dict(tur="vozvrat", no=1, sana=None, nom="Возврат 1-қисм · рўйхат (Excel)", summa=v1.get("summa"),
+                        used=v1.get("berilgan_summa"), left=v1.get("qolgan_summa"), kod=k, matn=m))
+    for q in qism_stats(cfg):
+        if q["faol"] is False:
+            k, m = "off", "⏸ Ўчирилган — текширувга кирмайди"
+        elif q["yopilgan"]:
+            k, m = "yopiq", f"🔒 Якунланган {_dmy(q['yopilgan'])}"
+        elif q["qolgan"] <= 1:
+            k, m = "tugagan", "✅ Тугаган"
+        else:
+            k, m = "ochiq", "🟢 Очиқ — ишлатиляпти" if q["berilgan"] > 0 else "🟢 Очиқ — навбатда"
+        out.append(dict(tur="vozvrat", no=q["no"], sana=q.get("sana"), nom=f"Возврат {q['no']}-қисм · сумма · биржа {q['birja']}",
+                        summa=q["summa"], used=q["berilgan"], left=q["qolgan"], kod=k, matn=m))
+    return out
+
+
+def holat_royxat_matn(items):
+    L = ["📋 Пуллар ва возвратлар ҳолати:"]
+    for x in items:
+        q = (f" · ишлатилди {x['used']:,.0f} · қолди {x['left']:,.0f} $" if x.get("used") is not None and x.get("left") is not None
+             else f" · {x['summa']:,.0f} $" if x.get("summa") else "")
+        L.append(f"{'💳' if x['tur'] == 'pul' else '↩️'} {x['nom']}{q}\n      {x['matn']}"
+                 + (f"\n      {x['gavhar']}" if x.get("gavhar") else ""))
+    return L
+
+
 def returns_stats(returns):
     returns = [r for r in returns if r.get("_used") or (r.get("chiqdi_qator") is None and not r.get("chiqdi_sana"))]
     used = [r for r in returns if r.get("_used")]
@@ -1681,18 +1783,15 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
         for q in qism_stats(cfg):
             if q_old.get(q["no"], 0) > 100 and q["qolgan"] <= 100:
                 L.append(f"🔔 Возврат {q['no']}-қисм ({q['summa']:,.0f} $) тугади. Якунлаш: /vozvrat_yop {q['no']}")
-        if act:
-            L.append(f"💰 Жорий транш №{act['no']} ({_dmy(act['sana'])}): қолдиқ {act['left']:,.0f} $ (ишлатилди {act['used']:,.0f} $)")
-        L.append(f"💰 Gavhar да жами қолдиқ: {s['left']:,.0f} $")
-        for q in qism_stats(cfg):
-            if not q["yopilgan"]:
-                L.append(f"↩️ Возврат {q['no']}-қисм: қолди {q['qolgan']:,.0f} $ ({q['summa']:,.0f} $ дан)")
+        L.append(f"💰 Gavhar да жами қолдиқ (очиқ пуллар): {s['left']:,.0f} $")
+        L += holat_royxat_matn(holat_royxat(cfg, trs, returns_stats(returns) if returns else None, rows))
         og = pul_ogoh(new_res, cfg)
         if og:
             L += [""] + og
         L.append("Батафсил: Excel файл ёки «Назорат» mini app.")
         return "\n".join(L)
     s["qismlar"] = qism_stats(cfg)
+    s["royxat"] = holat_royxat(cfg, trs, returns_stats(returns) if returns else None, rows)
     s["off"] = [f"Транш №{t['no']} ({_dmy(t['sana'])})" for t in cfg["transhlar"] if not t.get("faol", True)]
     s["pul_ogoh"] = pul_ogoh(rows, cfg)
     s["eski"] = [f"Транш №{t['no']} ({_dmy(t['sana'])})" for t in cfg["transhlar"] if t.get("faol", True) and t.get("faqat_tekshiruv")]
@@ -1713,24 +1812,9 @@ def holat_matn(rows, trs, s):
         L = [s["volume_ogoh"], ""] + L
     if not trs:
         return L + ["Ҳали транш (пул) киритилмаган.", "Gavhar нарх хабарини шу ерга forward қилинг — бот суммани сўрайди."]
-    L.append(f"💰 Gavhar да пулингиз: {s['left']:,.0f} $")
-    if s.get("off"):
-        L.append("⏸ Текширувдан ўчирилган: " + ", ".join(s["off"]))
-    if s.get("eski"):
-        L.append("📅 Фақат эски приход текшируви учун (кундалик навбатда эмас): " + ", ".join(s["eski"]))
-    act = next((t for t in trs if t["holat"] in ("Фаол", "Ишлатилмаган")), None)
-    for t in trs:
-        nom = f"Транш №{t['no']} ({_dmy(t['sana'])}, биржа {t['birja']})"
-        if t is act:
-            L.append(f"💳 Ҳозир ишлаяпти: {nom} — қолдиқ {t['left']:,.0f} $")
-        elif t["holat"] == "Ишлатилмаган":
-            L.append(f"   Навбатда: {nom} — {t['summa']:,.0f} $")
-        elif t["holat"] == "Фаол":
-            L.append(f"   {nom} — қисман ишлатилган, қолдиқ {t['left']:,.0f} $")
-        elif t["holat"] == "Тугаган":
-            L.append(f"   {nom} — тугаган")
-        else:
-            L.append(f"   {nom} — {str(t['holat']).lower()}" + (f", ичида {t['left']:,.0f} $ ишлатилмай қолган ⚠" if t["left"] > 1 else ""))
+    L.append(f"💰 Gavhar да пулингиз (очиқ пуллар): {s['left']:,.0f} $")
+    if s.get("royxat"):
+        L += [""] + holat_royxat_matn(s["royxat"])
     inv = {(r["faktura"], r["filial"], r["sana"]) for r in rows}
     if not inv:
         L += ["", "🧾 Ҳали фактура юкланмаган."]
@@ -1752,13 +1836,6 @@ def holat_matn(rows, trs, s):
     rv = sum(1 for r in rows if r.get("transh") == "возврат")
     if rv:
         L.append(f"↩️ Возвратдан берилган: {rv} та товар (возврат нархида)")
-    v1 = s.get("v1")
-    if v1:
-        L.append(f"↩️ Возврат 1-қисм (рўйхат): {v1['n']} та · {v1['summa']:,.0f} $ → берилди {v1['berilgan_summa']:,.0f} $"
-                 + (f" — якунланган ({_dmy(v1['yopilgan'])})" if v1["yopilgan"] else f", қолди {v1['qolgan_summa']:,.0f} $"))
-    for q in s.get("qismlar", []):
-        L.append(f"↩️ Возврат {q['no']}-қисм: {q['summa']:,.0f} $ → берилди {q['berilgan']:,.0f} $"
-                 + (f" — якунланган ({_dmy(q['yopilgan'])})" if q["yopilgan"] else f", қолди {q['qolgan']:,.0f} $"))
     if s.get("tugash"):
         L.append(f"⏳ Пул тахминан {s['tugash']:%d.%m.%Y} гача етади")
     if s.get("pul_ogoh"):

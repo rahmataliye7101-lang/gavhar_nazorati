@@ -285,6 +285,8 @@ async def api_holat(request):
         vozvrat={k: r2(v) if isinstance(v, float) else v for k, v in s["vozvrat"].items()},
         qismlar=[{k: (r2(v) if isinstance(v, float) else v) for k, v in q.items() if k != "narxlar"} for q in s.get("qismlar", [])],
         oy_pul=oy_pul_json(rows_all, cfg, oy),
+        royxat=[{k: (r2(v) if isinstance(v, float) else v) for k, v in x.items()}
+                for x in N.holat_royxat(cfg, trs_all, s_all.get("vozvrat"), rows_all)],
         davr=davr,
         jami_tovar=r2(sum(r["summa"] or 0 for r in rows)),
         vozvrat_tovar=r2(sum(r["summa"] or 0 for r in rows if r.get("transh") == "возврат")),

@@ -184,6 +184,24 @@ function invalidate() { loaded.holat = loaded.faktura = loaded.xato = false; FO 
 
 /* ---------- HOLAT ---------- */
 let chart;
+function royxatHtml(R) {
+  if (!R || !R.length) return '';
+  const cls = {ochiq: 'g', yopiq: 'n', tugagan: 'n', off: 'r', eski: 'a'};
+  const ic = {ochiq: '🟢', yopiq: '🔒', tugagan: '✅', off: '⏸', eski: '📅'};
+  const lbl = x => ({ochiq: 'Ochiq', tugagan: 'Tugagan', off: "O'chirilgan", eski: 'Faqat eski prixod'})[x.kod] || (x.tur === 'pul' ? 'Yopilgan' : 'Yakunlangan');
+  return `<details class="card" style="padding:0" ${R.some(x => x.kod !== 'ochiq') ? 'open' : ''}>
+    <summary style="padding:14px 16px;font-weight:600;cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center">
+      <span>📋 Pullar va vozvratlar holati</span>
+      <span class="mut" style="font-size:12px;font-weight:400">${R.filter(x => x.kod === 'ochiq').length} ochiq · ${R.filter(x => x.kod !== 'ochiq').length} yopiq/o'chirilgan ›</span></summary>
+    <div style="padding:0 16px 12px">
+    ${R.map(x => `<div style="padding:8px 0;border-top:1px solid var(--line);${x.kod === 'ochiq' ? '' : 'opacity:.8'}">
+      <div class="rw"><b style="font-size:14px">${x.tur === 'pul' ? '💳' : '↩️'} ${E(x.nom)}</b><span class="bd ${cls[x.kod] || 'n'}">${ic[x.kod] || ''} ${lbl(x)}</span></div>
+      ${x.gavhar ? `<div style="font-size:12px;margin-top:3px;${/⚠/.test(x.gavhar) ? 'color:var(--red)' : ''}">${E(x.gavhar)}</div>` : ''}
+      <div class="mut" style="font-size:12px;margin-top:2px">${E(x.matn.replace(/^\S+\s/, ''))}${x.used != null && x.left != null ? ` · ishlatildi ${usd(x.used)} · qoldi ${usd(x.left)}` : x.summa ? ` · ${usd(x.summa)}` : ''}</div>
+    </div>`).join('')}
+    <div class="mut" style="font-size:11px;margin-top:6px">🔒 Yopilgan/yakunlangan — shu sanadan keyingi fakturalarga ishlatilmaydi. ⏸ O'chirilgan — tekshiruvga umuman kirmaydi (Admin → Tekshiruv sozlamasi).</div>
+    </div></details>`;
+}
 async function loadHolat() {
   const el = $('#p-holat');
   try {
@@ -209,6 +227,7 @@ async function loadHolat() {
       ${open.map(t => `<div class="bar"><i style="width:${Math.max(1, Math.min(100, t.pct))}%"></i></div>
         <div class="rw mut"><span>№${t.no} · ishlatilgan ${usd(t.used)}</span><span>${fmt(t.pct, 1)}%</span></div>`).join('')}
     </div>
+    ${royxatHtml(d.royxat)}
     ${(d.yopiq_pullar || []).length && d.yetmadi && d.yetmadi.n ? `<div class="card alert">
       <b style="font-size:14px">⚠ Pul hisobga olinmayapti</b>
       <div class="mut" style="margin-top:4px">${fmt(d.yetmadi.n)} ta tovar (${usd(d.yetmadi.summa)}) uchun pul yetmadi — ular puldan ayirilmadi.
