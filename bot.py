@@ -7,7 +7,7 @@
   DATA_DIR       — маълумот папкаси (Railway Volume шу ерга уланади). Стандарт: /data
 """
 import asyncio
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 import datetime as dt
 import filecmp
 import json
@@ -112,8 +112,32 @@ def ensure_data():
             nazorat.save_ledger(str(LEDGER), [])
 
 
+FIKS_SEED = [  # фойдаланувчи 04.11.2026 да берган Gavhar возврат фиксацияси (сегмент: грамм, сумма $)
+    {"oy": "2026-09", "manba": "Фойдаланувчи 04.11.2026: сентябрь фиксацияси (678 119,88 $)", "turlar": {
+        "Бриллиант": {"summa": 315471.77, "gramm": 3310.22, "dona": 732}, "Фианит": {"summa": 72236.30, "gramm": 789.87, "dona": 250},
+        "Вакс": {"summa": 219071.37, "gramm": 2348.83, "dona": 577}, "Дорика": {"summa": 4665.53, "gramm": 49.71, "dona": 14},
+        "Браслет": {"summa": 66674.91, "gramm": 709.87, "dona": 75}}},
+    {"oy": "2026-10", "manba": "Фойдаланувчи 04.11.2026: октябрь фиксацияси (483 911,31 $)", "turlar": {
+        "Бриллиант": {"summa": 244165.82, "gramm": 2697.97, "dona": 579}, "Фианит": {"summa": 40348.52, "gramm": 462.93, "dona": 151},
+        "Вакс": {"summa": 159777.57, "gramm": 1810.88, "dona": 408}, "Дорика": {"summa": 5314.85, "gramm": 60.89, "dona": 18},
+        "Браслет": {"summa": 34304.55, "gramm": 380.41, "dona": 44}}},
+]
+
+
 def load_cfg():
     cfg = json.loads(TRANSH.read_text(encoding="utf-8"))
+    # бир марталик (04.11.2026): Excel возврат рўйхати (1-қисм) ва 2-қисм тўхтатилади, ўрнига сентябрь/октябрь фиксацияси
+    if not cfg.get("fiks_v1"):
+        cfg.setdefault("vozvrat_1", {})["faol"] = False
+        for q in cfg.get("vozvrat_qismlar") or []:
+            q["faol"] = False
+        if not cfg.get("vozvrat_fiks"):
+            cfg["vozvrat_fiks"] = [json.loads(json.dumps(f)) for f in FIKS_SEED]
+        cfg["fiks_v1"] = True
+        try:
+            save_cfg(cfg)
+        except Exception:
+            pass
     # бир марталик: Admin да сақланган сериялар рўйхатига QQW қўшилади (Gavhar QQW ни Вакс нархида ёзади)
     if cfg.get("seriya_tosh") is not None and not cfg.get("seriya_qqw"):
         if "QQW" not in [x.upper() for x in cfg["seriya_tosh"]]:
@@ -771,6 +795,8 @@ async def on_text(update: Update, ctx):
             return
     if await toz_matn(update, ctx, text):
         return
+    if await fiks_matn(update, ctx, text):
+        return
     aw = ctx.user_data.get("await_summa")
     if aw:
         m = re.fullmatch(r"\s*([\d\s.,]+)\s*(\$|доллар|доллор|usd)?\s*", text, re.I)
@@ -1133,11 +1159,65 @@ def looks_like_returns(path, name):
     return False
 
 
+def fiks_holat_matn(cfg=None):
+    cfg = cfg or load_cfg()
+    nazorat.compute(cfg, nazorat.load_ledger(str(LEDGER)), nazorat.load_returns(str(VOZVRAT)))
+    L = ["📑 Возврат фиксацияси (тош тури бўйича қиймат):"]
+    for f in nazorat.fiks_stats(cfg):
+        L.append(f"\n{f['nom'].capitalize()}{' ⏸ ўчирилган' if not f['faol'] else ''}: {f['summa']:,.2f} $ · "
+                 f"ишлатилди {f['used']:,.2f} $ ({f['n']} та) · қолди {f['left']:,.2f} $")
+        L += [f"   • {t}" for t in nazorat.fiks_tafsil(f, cfg.get("chegara_usd_gr", 0.3))]
+    if len(L) == 1:
+        L.append("ҳали киритилмаган")
+    L += ["", "Қандай ҳисобланади: пул (транш) нархига тушмаган товар — возврат. У фиксациядаги ўша тош тури қийматидан айирилади "
+          "(аввал сентябрь, кейин октябрь; товар санаси фиксация ойидан олдин бўлмаслиги керак). «Браслет Занжир» — билакузук ва занжирлар. "
+          "1 гр нархи шу турнинг энг юқори нархидан баланд бўлса — возврат ҳисобланмайди, хато чиқади.",
+          "", "Янгилаш: «Фиксация» сўзи, ой номи ва Gavhar жадвалини (Excel дан нусха) юборинг — шу ой қайта ёзилади.",
+          "⏸ Excel возврат рўйхати (1-қисм) ва 2-қисм тўхтатилган (Admin → Tekshiruv sozlamasi да қайта ёқиш мумкин)."]
+    return "\n".join(L)
+
+
+@need("holat")
+async def fiks_cmd(update: Update, ctx):
+    await send_long(update.message, fiks_holat_matn())
+
+
+async def fiks_matn(update: Update, ctx, text):
+    """«Фиксация» матни: Gavhar ой бўйича возврат жадвали (сегмент, грамм, штук, сумма)."""
+    if not re.search(r"фиксац|fiksats|фикс\b", text or "", re.I):
+        return False
+    if not has_perm(update.effective_user.id, "vozvrat_yuklash"):
+        await update.message.reply_text(f"⛔ Сизда бу учун рухсат йўқ: {PERMS['vozvrat_yuklash']}.")
+        return True
+    res, errs = nazorat.fiks_matn_parse(text, TYPE_ALIASES)
+    if errs or not res:
+        await update.message.reply_text("❌ Фиксация ўқилмади: " + "; ".join(errs or ["маълумот йўқ"]) +
+                                        "\nНамуна:\nФиксация\nСентябрь\nБриллиант 3 310,22 732 $ 315 471,77\nВакс 2 348,83 577 $ 219 071,37\n...")
+        return True
+    async with LOCK:
+        cfg = load_cfg()
+        lst = cfg.setdefault("vozvrat_fiks", [])
+        L = []
+        for oy, T in sorted(res.items()):
+            old = next((f for f in lst if f["oy"] == oy), None)
+            if old:
+                lst.remove(old)
+            lst.append({"oy": oy, "turlar": T, "manba": f"Telegram бот, {dt.date.today()}"})
+            L.append(f"{'🔄' if old else '➕'} {nazorat.oy_nom(oy)}: " + ", ".join(
+                f"{'Браслет/Занжир' if n == 'Браслет' else n} {x['summa']:,.2f} $" for n, x in T.items())
+                     + f" · жами {sum(x['summa'] for x in T.values()):,.2f} $")
+        save_cfg(cfg)
+    await update.message.reply_text("✅ Возврат фиксацияси сақланди:\n" + "\n".join(L) + "\n\nЖами жадвал суммаси Gavhar жадвалидаги «Жами» билан бир хилми — текширинг.")
+    await send_long(update.message, fiks_holat_matn())
+    return True
+
+
 @need("vozvrat_yuklash")
 async def vozvrat(update: Update, ctx):
     ctx.user_data["vozvrat_mode"] = True
     st = nazorat.returns_stats(nazorat.load_returns(str(VOZVRAT)))
     await update.message.reply_text(
+        "⏸ Эслатма: Excel возврат рўйхати (1-қисм) ва 2-қисм ҳозир ТЎХТАТИЛГАН — возврат ой фиксацияси бўйича ҳисобланади (/fiks).\n\n"
         f"↩️ Возврат рўйхатида ҳозир: {st['n']} та товар.\n"
         "Янги возврат Excel файлини ташланг.\n\n"
         "Рўйхатсиз (фақат сумма ва нархлар) возврат бўлса — «Возврат» сўзи билан нархларни ёзинг, масалан:\n"
@@ -1212,8 +1292,21 @@ async def returns_cb(update: Update, ctx):
     await apply_returns(update, rows, q.data == "rv_add")
 
 
+INFLIGHT = defaultdict(int)  # chat_id -> ҳозир юкланаётган/ўқилаётган файллар сони
+
+
 @guard
 async def document(update: Update, ctx):
+    """Кетма-кет ташланган фактуралар (5 та, 10 та …) — ҳаммаси ўқилиб бўлгунча кутилади ва БИТТА жавоб берилади."""
+    chat = update.effective_chat.id
+    INFLIGHT[chat] += 1
+    try:
+        return await _document(update, ctx)
+    finally:
+        INFLIGHT[chat] -= 1
+
+
+async def _document(update: Update, ctx):
     doc = update.message.document
     name = doc.file_name or "faktura.xlsx"
     if not name.lower().endswith((".xlsx", ".xlsm")):
@@ -1260,12 +1353,9 @@ async def document(update: Update, ctx):
                 bk.unlink(missing_ok=True)
                 return _navbatga(update, path, name, None, "tek")
             eski = nazorat.eski_faktura(load_cfg(), rows)
-            if eski:  # кундалик пуллардан олдинги сана — эски фактура: фақат текширамиз
+            if eski:  # кундалик пуллардан олдинги сана — эски фактура: фақат текширамиз (бошқа эски файллар билан бирга)
                 bk.unlink(missing_ok=True)
-                await update.message.reply_text(
-                    f"📅 Бу фактура санаси ({nazorat._dmy(eski)}) кундалик пуллардан олдин — эски фактура.\n"
-                    "Реестрга ҚЎШМАЙМАН ва ҳозирги пулдан айирмайман — ўша давр пуллари ва возвратлар бўйича текшираман.")
-                return await handle_oylik_file(update, path)
+                return _navbatga(update, path, name, None, "tek")
             if len(invs) > 5 or span > 3:  # кўп фактура / узоқ давр — бу ойлик (15 кунлик) приход, реестрга қўшмаймиз
                 bk.unlink(missing_ok=True)
                 await update.message.reply_text(
@@ -1308,6 +1398,10 @@ def _navbatga(update, path, name, bk, mode):
 async def _batch_run(key):
     try:
         await asyncio.sleep(4)
+        tinch = 0
+        while tinch < 2:  # яна файл юкланяпти/ўқиляпти — ҳаммаси келиб, 3 сония тинч бўлгунча кутамиз
+            await asyncio.sleep(1.5)
+            tinch = tinch + 1 if INFLIGHT.get(key[0], 0) == 0 else 0
     except asyncio.CancelledError:
         return
     b = BATCH.pop(key, None)
@@ -1322,8 +1416,8 @@ async def _batch_run(key):
                 rows += nazorat.read_invoice(f, [])
             oy_ = nazorat.otgan_oy(rows) or ""
             await update.effective_message.reply_text(
-                f"📅 {len(files)} та файл — ЎТГАН ОЙ фактураси ({nazorat.OYLAR[int(oy_[5:7])] if oy_ else ''} {oy_[:4]}).\n"
-                "Жорий ой ҳисобига (реестрга) ҚЎШМАЙМАН — ўша ой пуллари ва возвратлари бўйича текшираман.")
+                f"📅 {len(files)} та файл — " + (f"ЎТГАН ОЙ фактураси ({nazorat.OYLAR[int(oy_[5:7])]} {oy_[:4]})" if oy_ else "ЭСКИ фактура (кундалик пуллардан олдинги сана)")
+                + ".\nЖорий ой ҳисобига (реестрга) ҚЎШМАЙМАН — ўша давр пуллари ва возвратлари бўйича ҳаммасини бирга текшираман.")
             return await handle_oylik_file(update, files, qoshish_tugma=True)
         if len(files) > 1:
             await update.effective_message.reply_text(f"📥 {len(files)} та файл қабул қилинди — ҳаммасини бирга текширяпман…")

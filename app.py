@@ -65,7 +65,7 @@ PERM_MAP = {("GET", "/api/holat"): "holat", ("GET", "/api/fakturalar"): "faktura
             ("POST", "/api/transh"): "transh_qoshish", ("POST", "/api/transh/yop"): "transh_qoshish",
             ("POST", "/api/chegara"): "transh_qoshish", ("POST", "/api/vozvrat/yop"): "transh_qoshish", ("POST", "/api/transh/faol"): "transh_qoshish", ("POST", "/api/transh/ochir"): "transh_qoshish",
             ("POST", "/api/transh/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/faol"): "transh_qoshish",
-            ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/seriya"): "transh_qoshish", ("POST", "/api/qqs"): "transh_qoshish", ("POST", "/api/qqs/metall"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
+            ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("POST", "/api/fiks"): "vozvrat_yuklash", ("POST", "/api/fiks/faol"): "vozvrat_yuklash", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/seriya"): "transh_qoshish", ("POST", "/api/qqs"): "transh_qoshish", ("POST", "/api/qqs/metall"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
             ("POST", "/api/xatolar/excel"): "hisobot", ("POST", "/api/faktura/excel"): "hisobot"}
 
 
@@ -745,7 +745,44 @@ async def api_sozlama(request):
     for t in sorted(cfg["transhlar"], key=lambda t: (t["sana"], t["no"])):
         x = qqs_json(t, cfg, rows)
         qq.append(dict(no=t["no"], sana=t["sana"], birja=t["birja_999"], **x))
-    return web.json_response({"transhlar": tr, "vozvrat": vozvrat, "seriya_tosh": seriya, "qqs": N.qqs_cfg(cfg), "qqs_pullar": qq})
+    fiks = [dict(oy=f["oy"], nom=f["nom"], faol=f["faol"], summa=r2(f["summa"]), used=r2(f["used"]), left=r2(f["left"]), n=f["n"],
+                 turlar=[dict(tur=t["tur"], summa=r2(t["summa"]), gramm=t["gramm"], used=r2(t["used"]), left=r2(t["left"]), n=t["n"],
+                              ort=r2(t["ort"]) if t["ort"] else None, fiks_1gr=r2(t["fiks_1gr"]) if t["fiks_1gr"] else None)
+                         for t in f["turlar"]]) for f in N.fiks_stats(cfg)]
+    return web.json_response({"transhlar": tr, "vozvrat": vozvrat, "seriya_tosh": seriya, "qqs": N.qqs_cfg(cfg), "qqs_pullar": qq,
+                              "fiks": fiks})
+
+
+async def api_fiks(request):
+    """Возврат фиксацияси: Gavhar ой жадвали матни (Excel дан нусха) → шу ой(лар) қайта ёзилади."""
+    b = await request.json()
+    res, errs = N.fiks_matn_parse(str(b.get("matn") or ""), B.TYPE_ALIASES)
+    if errs or not res:
+        return web.json_response({"errors": errs or ["маълумот йўқ"]}, status=400)
+    async with B.LOCK:
+        cfg = B.load_cfg()
+        lst = cfg.setdefault("vozvrat_fiks", [])
+        for oy, T in res.items():
+            lst[:] = [f for f in lst if f["oy"] != oy]
+            lst.append({"oy": oy, "turlar": T, "manba": f"Mini app, {dt.date.today()}"})
+        B.save_cfg(cfg)
+    return web.json_response({"ok": True, "oylar": sorted(res), "jami": {oy: round(sum(x["summa"] for x in T.values()), 2) for oy, T in res.items()}})
+
+
+async def api_fiks_faol(request):
+    b = await request.json()
+    oy, faol = str(b.get("oy") or ""), bool(b.get("faol", True))
+    async with B.LOCK:
+        cfg = B.load_cfg()
+        f = next((x for x in cfg.get("vozvrat_fiks") or [] if x["oy"] == oy), None)
+        if not f:
+            return web.json_response({"errors": ["Бундай фиксация йўқ"]}, status=404)
+        if b.get("ochir"):
+            cfg["vozvrat_fiks"].remove(f)
+        else:
+            f["faol"] = faol
+        B.save_cfg(cfg)
+    return web.json_response({"ok": True})
 
 
 async def api_seriya(request):
@@ -971,6 +1008,8 @@ def make_web():
     app.router.add_post("/api/qqs/metall", api_qqs_metall)
     app.router.add_post("/api/vozvrat/faol", api_vozvrat_faol)
     app.router.add_post("/api/vozvrat/qism", api_vozvrat_qism)
+    app.router.add_post("/api/fiks", api_fiks)
+    app.router.add_post("/api/fiks/faol", api_fiks_faol)
     app.router.add_post("/api/yuklash", api_yuklash)
     app.router.add_post("/api/faktura/excel", api_faktura_excel)
     app.router.add_post("/api/faktura/ochir", api_faktura_ochir)
@@ -1022,6 +1061,7 @@ def make_bot():
     app.add_handler(CommandHandler("admin", B.admin))
     app.add_handler(CallbackQueryHandler(B.admin_cb, pattern="^ad_"))
     app.add_handler(CommandHandler("vozvrat", B.vozvrat))
+    app.add_handler(CommandHandler(["fiks", "fiksatsiya"], B.fiks_cmd))
     app.add_handler(CommandHandler("xatolar", B.xatolar_cmd))
     app.add_handler(CommandHandler("vozvrat_yop", B.vozvrat_yop))
     app.add_handler(CommandHandler("vozvrat_och", B.vozvrat_och))
