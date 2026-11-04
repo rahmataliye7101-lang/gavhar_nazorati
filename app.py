@@ -65,7 +65,7 @@ PERM_MAP = {("GET", "/api/holat"): "holat", ("GET", "/api/fakturalar"): "faktura
             ("POST", "/api/transh"): "transh_qoshish", ("POST", "/api/transh/yop"): "transh_qoshish",
             ("POST", "/api/chegara"): "transh_qoshish", ("POST", "/api/vozvrat/yop"): "transh_qoshish", ("POST", "/api/transh/faol"): "transh_qoshish", ("POST", "/api/transh/ochir"): "transh_qoshish",
             ("POST", "/api/transh/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/faol"): "transh_qoshish",
-            ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("POST", "/api/fiks"): "vozvrat_yuklash", ("POST", "/api/fiks/faol"): "vozvrat_yuklash", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/seriya"): "transh_qoshish", ("POST", "/api/qqs"): "transh_qoshish", ("POST", "/api/qqs/metall"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
+            ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("POST", "/api/fiks"): "vozvrat_yuklash", ("POST", "/api/fiks/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/ochir"): "transh_qoshish", ("POST", "/api/fiks/faol"): "vozvrat_yuklash", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/seriya"): "transh_qoshish", ("POST", "/api/qqs"): "transh_qoshish", ("POST", "/api/qqs/metall"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
             ("POST", "/api/xatolar/excel"): "hisobot", ("POST", "/api/faktura/excel"): "hisobot"}
 
 
@@ -92,7 +92,7 @@ def state():
     st = N.stats(rows, trs)
     # ⏸ ўчирилган эски возвратлар (Excel рўйхат, 2-қисм) Holat да кўрсатилмайди — ҳозир возврат ой фиксацияси бўйича
     st["vozvrat"] = N.returns_stats(rets) if (cfg.get("vozvrat_1") or {}).get("faol", True) else dict(n=0)
-    st["qismlar"] = [q for q in N.qism_stats(cfg) if q.get("faol") is not False]
+    st["qismlar"] = [q for q in N.qism_stats(cfg) if q.get("faol") is not False and not (cfg.get("oy_boshi") or {}).get("sana")]
     st["vozvrat"]["yopilgan"] = (cfg.get("vozvrat_1") or {}).get("yopilgan_sana")
     st["fiks"] = [f for f in N.fiks_stats(cfg) if f["faol"]]
     return cfg, rows, trs, st
@@ -290,6 +290,8 @@ async def api_holat(request):
         fiks=[dict(oy=f["oy"], nom=f["nom"], summa=r2(f["summa"]), used=r2(f["used"]), left=r2(f["left"]), n=f["n"],
                    turlar=[{k: (r2(v) if isinstance(v, float) else v) for k, v in t.items()} for t in f["turlar"]]) for f in s.get("fiks", [])],
         oy_pul=oy_pul_json(rows_all, cfg, oy),
+        oylar=[oy_pul_json(rows_all, cfg, m) for m in sorted({(r.get("sana") or "")[:7] for r in rows_all if r.get("sana")}, reverse=True)
+               if not oy or m == oy],
         royxat=[{k: (r2(v) if isinstance(v, float) else v) for k, v in x.items()}
                 for x in N.holat_royxat(cfg, trs_all, s_all.get("vozvrat"), rows_all)],
         davr=davr,
@@ -563,7 +565,80 @@ async def api_transhlar(request):
                         holat=x.get("holat") if t.get("faol", True) else "Ўчирилган", faol=t.get("faol", True),
                         navbat=not t.get("faqat_tekshiruv"), lom=r2(t["birja_999"] * 585 / 999), tarkib=N.narx_tarkibi(t, cfg),
 ))
-    return web.json_response({"chegara": cfg.get("chegara_usd_gr", 0.3), "transhlar": out})
+    vq = []
+    for q in N.qism_stats(cfg):
+        q0 = next((x for x in cfg.get("vozvrat_qismlar") or [] if x["no"] == q["no"]), {})
+        vq.append(dict(no=q["no"], sana=q.get("sana"), summa=r2(q["summa"]), birja=q.get("birja"), narxlar=q.get("narxlar", {}),
+                       used=r2(q["berilgan"]), left=r2(q["qolgan"]), n=q["n"], faol=q.get("faol", True), yopilgan=q.get("yopilgan"),
+                       manba=q0.get("manba")))
+    fk = []
+    for f in N.fiks_stats(cfg):
+        f0 = next((x for x in cfg.get("vozvrat_fiks") or [] if x["oy"] == f["oy"]), {})
+        fk.append(dict(oy=f["oy"], nom=f["nom"], faol=f["faol"], summa=r2(f["summa"]), used=r2(f["used"]), left=r2(f["left"]), n=f["n"],
+                       manba=f0.get("manba"),
+                       turlar=[dict(key=k, tur="Браслет/Занжир" if k == "Браслет" else k, summa=r2(x["summa"]), gramm=x.get("gramm"), dona=x.get("dona"),
+                                    used=r2(x.get("_used", 0)), left=r2(x["summa"] - x.get("_used", 0)), g=r2(x.get("_g", 0)), n=x.get("_n", 0),
+                                    narx=r2(x["summa"] / x["gramm"]) if x.get("gramm") else None)
+                               for k, x in f0.get("turlar", {}).items()]))
+    return web.json_response({"chegara": cfg.get("chegara_usd_gr", 0.3), "transhlar": out, "vozvratlar": vq, "fiks": fk})
+
+
+async def api_vozvrat_tahrir(request):
+    """Суммали возврат қисмини (мас. 2-қисм) ўзгартириш: сумма, сана, биржа, 1 гр нархлари."""
+    b = await request.json()
+    p = transh_from_body(b)
+    async with B.LOCK:
+        cfg = B.load_cfg()
+        q = next((x for x in cfg.get("vozvrat_qismlar") or [] if x["no"] == int(b.get("no", 0))), None)
+        if not q:
+            return web.json_response({"errors": ["Бундай возврат қисми йўқ"]}, status=404)
+        if p.get("sana"):
+            q["sana"] = p["sana"]
+        if p.get("summa"):
+            q["summa_usd"] = p["summa"]
+        if p.get("birja"):
+            q["birja"] = p["birja"]
+        if p.get("narxlar"):
+            q.setdefault("narxlar", {}).update(p["narxlar"])
+        q["manba"] = (q.get("manba") or "") + f" · таҳрирланди {dt.date.today()}"
+        B.save_cfg(cfg)
+    return web.json_response({"ok": True})
+
+
+async def api_vozvrat_ochir(request):
+    """Суммали возврат қисмини бутунлай ўчириш (нусха backup да қолади)."""
+    b = await request.json()
+    async with B.LOCK:
+        cfg = B.load_cfg()
+        lst = cfg.get("vozvrat_qismlar") or []
+        n0 = len(lst)
+        cfg["vozvrat_qismlar"] = [x for x in lst if x["no"] != int(b.get("no", 0))]
+        if len(cfg["vozvrat_qismlar"]) == n0:
+            return web.json_response({"errors": ["Бундай возврат қисми йўқ"]}, status=404)
+        B.save_cfg(cfg)
+    return web.json_response({"ok": True})
+
+
+async def api_fiks_tahrir(request):
+    """Возврат фиксациясини ўзгартириш: ҳар тош тури учун сумма ва грамм (бўш сумма — тур ўчади)."""
+    b = await request.json()
+    oy = str(b.get("oy") or "")
+    async with B.LOCK:
+        cfg = B.load_cfg()
+        f = next((x for x in cfg.get("vozvrat_fiks") or [] if x["oy"] == oy), None)
+        if not f:
+            return web.json_response({"errors": ["Бундай фиксация йўқ"]}, status=404)
+        T = {}
+        for k, v in (b.get("turlar") or {}).items():
+            sm, gr = N.to_num((v or {}).get("summa")), N.to_num((v or {}).get("gramm"))
+            if sm and sm > 0:
+                T[k] = dict(summa=round(sm, 2), gramm=gr if gr and gr > 0 else None, dona=(f["turlar"].get(k) or {}).get("dona"))
+        if not T:
+            return web.json_response({"errors": ["Камида битта тур суммаси керак"]}, status=400)
+        f["turlar"] = T
+        f["manba"] = (f.get("manba") or "") + f" · таҳрирланди {dt.date.today()}"
+        B.save_cfg(cfg)
+    return web.json_response({"ok": True})
 
 
 def qqs_json(t, cfg, rows):
@@ -1014,6 +1089,9 @@ def make_web():
     app.router.add_post("/api/vozvrat/faol", api_vozvrat_faol)
     app.router.add_post("/api/vozvrat/qism", api_vozvrat_qism)
     app.router.add_post("/api/fiks", api_fiks)
+    app.router.add_post("/api/fiks/tahrir", api_fiks_tahrir)
+    app.router.add_post("/api/vozvrat/tahrir", api_vozvrat_tahrir)
+    app.router.add_post("/api/vozvrat/ochir", api_vozvrat_ochir)
     app.router.add_post("/api/fiks/faol", api_fiks_faol)
     app.router.add_post("/api/yuklash", api_yuklash)
     app.router.add_post("/api/faktura/excel", api_faktura_excel)

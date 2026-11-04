@@ -149,6 +149,33 @@ def load_cfg():
         except Exception:
             pass
     # бир марталик: Admin да сақланган сериялар рўйхатига QQW қўшилади (Gavhar QQW ни Вакс нархида ёзади)
+    # бир марталик (04.11.2026): ноябрь ОЙ БОШИ — Gavhar да жами ҳақдорлик 1 753 267.82 $ (фойдаланувчи берган)
+    if not cfg.get("oy_boshi_v1"):
+        cfg["oy_boshi"] = {"sana": "2026-11-01", "pul": 591236.63, "vozvrat": 1162031.19, "jami": 1753267.82,
+                           "vozvrat_matn": "сентябрь 678 119.88 + октябрь 483 911.31",
+                           "manba": "Фойдаланувчи 04.11.2026: ой бошига дебиторка — қолган факт қарзимиз 591 236.63 (28.10 пулидан), возврат 1 162 031.19"}
+        cfg["oy_boshi_v1"] = True
+        try:
+            save_cfg(cfg)
+        except Exception:
+            pass
+    ob_ = cfg.get("oy_boshi") or {}
+    if ob_.get("sana") and not ob_.get("pul_no"):  # ой боши пули (28.10) — бир марта белгиланади, кейин олдинги санали пул қўшилса ҳам ўзгармайди
+        _t = max((t for t in cfg.get("transhlar", []) if t["sana"] <= ob_["sana"]), key=lambda t: (t["sana"], t["no"]), default=None)
+        if _t:
+            ob_["pul_no"] = _t["no"]
+            try:
+                save_cfg(cfg)
+            except Exception:
+                pass
+    # бир марталик (04.11.2026): QSG/ZSG ва бошқа сериялар ҳам — билак узук Браслет, занжир Дорика нархида
+    if not cfg.get("seriya_v3"):
+        cfg["seriya_tosh"] = []
+        cfg["seriya_v3"] = cfg["seriya_qqw"] = True
+        try:
+            save_cfg(cfg)
+        except Exception:
+            pass
     if cfg.get("seriya_tosh") is not None and not cfg.get("seriya_qqw"):
         if "QQW" not in [x.upper() for x in cfg["seriya_tosh"]]:
             cfg["seriya_tosh"].append("QQW")

@@ -61,6 +61,14 @@ tr:last-child td{border-bottom:0}
   .trl{margin-top:6px;font-size:12px;color:var(--mut)}
   .vq{margin-top:8px;padding:8px 10px;border-radius:10px;background:var(--bg2,rgba(52,199,89,.08))}
   .upres{white-space:pre-wrap;font-size:12.5px;margin-top:10px;padding:10px;border-radius:10px;background:var(--bg2,rgba(0,0,0,.04));max-height:420px;overflow:auto}
+details.fold{margin:10px 0}
+details.fold>summary{list-style:none;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;
+  background:var(--card,#fff);border-radius:14px;padding:13px 16px;font-weight:600;font-size:15px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+details.fold>summary::-webkit-details-marker{display:none}
+details.fold>summary .r{font-weight:400;font-size:12px;color:var(--mut,#888);white-space:nowrap}
+details.fold>summary .r:after{content:' ›';display:inline-block;transition:transform .15s}
+details.fold[open]>summary .r:after{transform:rotate(90deg)}
+details.fold>.fb{padding-top:8px}
 </style>
 </head>
 <body>
@@ -182,25 +190,50 @@ function show(p, force) {
 }
 function invalidate() { loaded.holat = loaded.faktura = loaded.xato = false; FO = null; }
 
+/* ---------- ochib-yopiladigan bo'lim (holati eslab qolinadi) ---------- */
+function foldOpen(id, def) { try { const v = localStorage.getItem('fold_' + id); return v === null ? def : v === '1'; } catch (e) { return def; } }
+function foldSave(el) { try { localStorage.setItem('fold_' + el.dataset.f, el.open ? '1' : '0'); } catch (e) {} if (el.open && el.dataset.f === 'h_stat' && window.__kun) drawChart(window.__kun); }
+function fold(id, title, right, body, def) {
+  return `<details class="fold" data-f="${id}" ${foldOpen(id, !!def) ? 'open' : ''} ontoggle="foldSave(this)"><summary><span>${title}</span><span class="r">${right || ''}</span></summary><div class="fb">${body}</div></details>`;
+}
 /* ---------- HOLAT ---------- */
 let chart;
-function royxatHtml(R) {
-  if (!R || !R.length) return '';
+function royxatQator(R) {
   const cls = {ochiq: 'g', yopiq: 'n', tugagan: 'n', off: 'r', eski: 'a'};
   const ic = {ochiq: '🟢', yopiq: '🔒', tugagan: '✅', off: '⏸', eski: '📅'};
   const lbl = x => ({ochiq: 'Ochiq', tugagan: 'Tugagan', off: "O'chirilgan", eski: 'Faqat eski prixod'})[x.kod] || (x.tur === 'pul' ? 'Yopilgan' : 'Yakunlangan');
-  return `<details class="card" style="padding:0" ${R.some(x => x.kod !== 'ochiq') ? 'open' : ''}>
-    <summary style="padding:14px 16px;font-weight:600;cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center">
-      <span>📋 Pullar va vozvratlar holati</span>
-      <span class="mut" style="font-size:12px;font-weight:400">${R.filter(x => x.kod === 'ochiq').length} ochiq · ${R.filter(x => x.kod !== 'ochiq').length} yopiq/o'chirilgan ›</span></summary>
-    <div style="padding:0 16px 12px">
-    ${R.map(x => `<div style="padding:8px 0;border-top:1px solid var(--line);${x.kod === 'ochiq' ? '' : 'opacity:.8'}">
-      <div class="rw"><b style="font-size:14px">${x.tur === 'pul' ? '💳' : x.tur === 'fiks' ? '📑' : '↩️'} ${E(L(x.nom))}</b><span class="bd ${cls[x.kod] || 'n'}">${ic[x.kod] || ''} ${lbl(x)}</span></div>
-      ${x.gavhar ? `<div style="font-size:12px;margin-top:3px;${/⚠/.test(x.gavhar) ? 'color:var(--red)' : ''}">${E(x.gavhar)}</div>` : ''}
+  return R.map((x, k) => `<div style="padding:8px 0;${k ? 'border-top:1px solid var(--line);' : ''}${x.kod === 'ochiq' ? '' : 'opacity:.85'}">
+      <div class="rw"><b style="font-size:14px">${x.tur === 'pul' ? '💳' : x.tur === 'fiks' ? '📑' : x.tur === 'ob' ? '📌' : '↩️'} ${E(L(x.nom))}</b>${x.tur === 'ob' ? '' : `<span class="bd ${cls[x.kod] || 'n'}">${ic[x.kod] || ''} ${lbl(x)}</span>`}</div>
+      ${x.gavhar ? `<div style="font-size:12px;margin-top:3px;${/⚠/.test(x.gavhar) ? 'color:var(--red)' : ''}">${E(L(x.gavhar))}</div>` : ''}
       <div class="mut" style="font-size:12px;margin-top:2px;${/⚠/.test(x.matn) ? 'color:var(--red)' : ''}">${E(L(x.matn.replace(/^\S+\s/, '')))}${x.used != null && x.left != null ? ` · ishlatildi ${usd(x.used)} · qoldi ${usd(x.left)}` : x.summa ? ` · ${usd(x.summa)}` : ''}</div>
-    </div>`).join('')}
-    <div class="mut" style="font-size:11px;margin-top:6px">🔒 Yopilgan/yakunlangan — shu sanadan keyingi fakturalarga ishlatilmaydi. ⏸ O'chirilgan — tekshiruvga umuman kirmaydi, undan ishlatilgan pul ham 0 ko'rinadi (Admin → Tekshiruv sozlamasi). Yakunlash uchun avval yoqing, keyin Holat → Vozvrat → «Vozvratni yakunlash».</div>
-    </div></details>`;
+    </div>`).join('') + `<div class="mut" style="font-size:11px;margin-top:6px">🔒 Yopilgan — shu sanadan keyingi fakturalarga ishlatilmaydi. ⏸ O'chirilgan — tekshiruvga kirmaydi.</div>`;
+}
+function royxatHtml(R) {
+  if (!R || !R.length) return '';
+  return `<div class="card">${royxatQator(R)}</div>`;
+}
+function oyHtml(m, first) {
+  const t = m.tovar, pl = m.pullar || [];
+  const body = `<div class="card">
+      <div class="lb">Shu oyda Gavhar bergan tovar</div>
+      <div class="big" style="font-size:24px">${usd(t.summa, 2)}</div>
+      <div class="mut">${fmt(t.faktura)} ta faktura · ${fmt(t.dokon)} ta do'kon · ${fmt(t.n)} ta tovar · ${fmt(t.gramm, 2)} gr</div>
+      <div class="g2" style="margin-top:10px">
+        <div><div class="lb">💳 Puldan</div><div class="v">${usd(t.puldan)}</div></div>
+        <div><div class="lb">↩️ Vozvrat tovar</div><div class="v grn">${usd(t.vozvrat)}</div></div>
+      </div>
+      ${t.xato_n ? `<div style="font-size:13px;margin-top:8px"><span class="red">❌ ${t.xato_n} ta tovar narxi xato</span>${t.ortiqcha ? ` · ortiqcha <b class="red">${usd(t.ortiqcha, 2)}</b>` : ''}${t.kam ? ` · kam ${usd(-t.kam, 2)}` : ''}</div>`
+                 : `<div class="grn" style="font-size:13px;margin-top:8px">✅ Hamma narxlar to'g'ri</div>`}
+      ${t.yetmadi > 0.5 ? `<div class="red" style="font-size:13px;margin-top:4px">⚠ ${usd(t.yetmadi)} tovarga pul yetmadi</div>` : ''}
+    </div>
+    ${pl.length ? `<div class="card"><div class="lb" style="margin-bottom:6px">Pullar — shu oyda</div>
+      <table><tr><th>Pul</th><th>Oy boshida</th><th>Ishlatildi</th><th>Oy oxirida</th></tr>
+      ${pl.map(p => `<tr><td><b>№${p.no}</b> <span class="mut">${dm(p.sana)}</span></td>
+        <td>${p.yangi ? '<span class="mut">berildi</span> ' : ''}${fmt(p.boshida)}</td><td>${fmt(p.ishlatildi)}</td>
+        <td>${p.oxirida <= 1 ? '<span class="grn">tugadi</span>' : `<b>${fmt(p.oxirida)}</b>`}</td></tr>`).join('')}</table>
+      <div class="mut" style="font-size:12px;margin-top:6px">«Oy oxirida» — keyingi oyga o'tgan qoldiq.</div></div>` : ''}`;
+  const right = `${usd(t.summa)}${t.xato_n ? ` · <span class="red">❌ ${t.xato_n}</span>` : ' · ✅'}`;
+  return fold('h_oy_' + m.oy, '📅 ' + E(m.nomi), right, body, first);
 }
 async function loadHolat() {
   const el = $('#p-holat');
@@ -208,33 +241,28 @@ async function loadHolat() {
     await ensureFO();
     const d = await api('/api/holat' + qs());
     const a = d.active, o = d.oxirgi, dv = d.davr;
-    const open = d.transhlar.filter(t => !isClosed(t.holat));
-    el.innerHTML = filterBar() + (dv ? `
-    <div class="card davr">
-      <div class="mut">Tanlangan davr: ${dv.oy_nomi || 'barcha oylar'} · ${dv.tr.length ? 'transh ' + dv.tr.map(n => '№' + n).join(', ') : 'barcha transhlar'}</div>
-      <div class="g2" style="margin-top:10px">
-        <div><div class="lb">Fakturalar</div><div class="v">${fmt(dv.faktura_soni)}</div><div class="mut">${fmt(dv.n)} pozitsiya · ${fmt(dv.gramm, 2)} gr</div></div>
-        <div><div class="lb">Faktura qiymati</div><div class="v">${usd(dv.fakt, 2)}</div><div class="mut">hisob bo'yicha ${usd(dv.hisob, 2)}</div></div>
-        <div><div class="lb">Farq (ortiqcha)</div><div class="v ${dv.farq > 0.5 ? 'red' : ''}">${sgn(dv.farq)} $</div><div class="mut">${dv.bad_n} ta farqli pozitsiya</div></div>
-        <div><div class="lb">Vozvrat berilgan</div><div class="v grn">${fmt(dv.vozvrat_n)} ta</div><div class="mut">${usd(dv.vozvrat_summa, 2)}</div></div>
-      </div>
-      <div class="mut" style="margin-top:8px">Transh pulidan olingan: ${usd(dv.olingan)} · ${dv.filiallar} filial</div>
-    </div>` : '') + `
+    const open = d.transhlar.filter(t => !isClosed(t.holat) && (t.left || 0) > 1);
+    const yq = (d.royxat || []).filter(x => x.tur === 'pul' && x.kod === 'yopiq' && (x.left || 0) > 1);
+    const vzQoldi = (d.fiks || []).reduce((s, f) => s + (f.left || 0), 0) + (d.qismlar || []).reduce((s, q) => s + (q.qolgan || 0), 0);
+    /* 1. Asosiy — doim ochiq */
+    const top = `
     <div class="card">
-      <div class="mut">Ta'minotchidagi qoldiq</div>
+      <div class="mut">Gavhar'dagi pulimiz (ochiq pullar)</div>
       <div class="big">${usd(d.left)}</div>
-      <div class="mut">${a ? `Faol transh №${a.no} · birja ${a.birja} · ≈ ${fmt(d.gramm999)} gr 999` : 'Faol transh yo\'q'}</div>
+      <div class="mut">${a ? `Hozir №${a.no} pul ishlatilyapti · birja ${a.birja} · ≈ ${fmt(d.gramm999)} gr 999` : 'Faol pul yo\'q'}</div>
       ${open.map(t => `<div class="bar"><i style="width:${Math.max(1, Math.min(100, t.pct))}%"></i></div>
         <div class="rw mut"><span>№${t.no} · ishlatilgan ${usd(t.used)}</span><span>${fmt(t.pct, 1)}%</span></div>`).join('')}
+      ${(() => { const ob = (d.royxat || []).find(x => x.tur === 'ob'); return ob ? `<div style="font-size:12px;margin-top:8px;padding:8px 10px;background:var(--bg);border-radius:10px">📌 ${E(L(ob.nom))}<div class="mut" style="font-size:12px;${/фарқ|farq/.test(ob.matn) ? '' : ''}">${E(L(ob.matn.replace(/^\S+\s/, '')))}</div></div>` : ''; })()}
+      <div class="g2" style="margin-top:10px">
+        <div><div class="lb">↩️ Vozvratda qolgan</div><div class="v grn">${usd(vzQoldi)}</div></div>
+        <div><div class="lb">Jami farq (xato)</div><div class="v ${d.farq > 0.5 ? 'red' : ''}">${sgn(d.farq, 0)} $</div></div>
+      </div>
     </div>
-    ${(() => { const yq = (d.royxat || []).filter(x => x.tur === 'pul' && x.kod === 'yopiq' && (x.left || 0) > 1);
-      return yq.length ? `<div class="card alert"><b style="font-size:14px">🔒 Yopilgan pullarda qolgan: ${usd(yq.reduce((a, x) => a + x.left, 0))}</b>
-        <div class="mut" style="margin-top:4px">${yq.map(x => `${E(L(x.nom.split(' · birja')[0].split(' · биржа')[0]))} — ${usd(x.left)}`).join('<br>')}<br>Gavhar keyingi pul narxiga o'tgan — bu pul yuqoridagi qoldiqqa kirmaydi. Gavhar bilan solishtiring.</div></div>` : ''; })()}
-    ${royxatHtml(d.royxat)}
+    ${yq.length ? `<div class="card alert"><b style="font-size:14px">🔒 Yopilgan pullarda qolgan: ${usd(yq.reduce((s, x) => s + x.left, 0))}</b>
+        <div class="mut" style="margin-top:4px">${yq.map(x => `${E(L(x.nom.split(' · birja')[0].split(' · биржа')[0]))} — ${usd(x.left)}`).join('<br>')}<br>Gavhar keyingi pul narxiga o'tgan — bu pul yuqoridagi qoldiqqa kirmaydi. Gavhar bilan solishtiring.</div></div>` : ''}
     ${(d.yopiq_pullar || []).length && d.yetmadi && d.yetmadi.n ? `<div class="card alert">
       <b style="font-size:14px">⚠ Pul hisobga olinmayapti</b>
-      <div class="mut" style="margin-top:4px">${fmt(d.yetmadi.n)} ta tovar (${usd(d.yetmadi.summa)}) uchun pul yetmadi — ular puldan ayirilmadi.
-        Shu bilan birga quyidagi pulda hali pul bor, lekin u hisobdan chiqarilgan:</div>
+      <div class="mut" style="margin-top:4px">${fmt(d.yetmadi.n)} ta tovar (${usd(d.yetmadi.summa)}) uchun pul yetmadi. Quyidagi pulda hali pul bor, lekin u hisobdan chiqarilgan:</div>
       ${d.yopiq_pullar.map(t => `<div class="rw" style="margin-top:8px;gap:8px">
         <span><b>№${t.no} · ${dmy(t.sana)}</b> — qolgan ${usd(t.left)}<br><span class="mut">${t.sabab === 'yopilgan' ? 'Yopilgan ' + dmy(t.yopilgan) : t.sabab === 'ochirilgan' ? 'Tekshiruvdan o\'chirilgan' : 'Faqat eski prixod uchun'}</span></span>
         <button class="btn2" onclick="pulOch(${t.no}, '${t.sabab}')">Qayta ochish</button></div>`).join('')}
@@ -243,93 +271,63 @@ async function loadHolat() {
       <div class="rw"><b style="font-size:14px">${o.bad ? (o.farq > 0 ? '⚠ Oxirgi faktura qimmat' : '⚠ Oxirgi fakturada farq bor') : '✓ Oxirgi faktura to\'g\'ri'}</b>
         <b class="${o.farq > 0 && o.bad ? 'red' : ''}" style="white-space:nowrap">${o.bad ? sgn(o.farq) + ' $' : ''}</b></div>
       <div class="mut" style="margin-top:4px">${E(o.faktura)} · ${E(o.filial)} · ${dmy(o.sana)} · ${o.n} pozitsiya · ${usd(o.fakt, 2)}</div>
-    </div>` : ''}
-    <div class="g2">
-      <div class="card"><div class="lb">Jami berilgan</div><div class="v">${usd(d.given)}</div></div>
-      <div class="card"><div class="lb">Puldan olingan tovar</div><div class="v">${usd(d.used)}</div>
-        <div class="mut">Jami tovar ${usd(d.jami_tovar)}${d.vozvrat_tovar ? ' · vozvrat ' + usd(d.vozvrat_tovar) : ''}</div></div>
-      <div class="card"><div class="lb">Fakturalar</div><div class="v">${fmt(d.faktura_soni)}</div></div>
-      <div class="card"><div class="lb">Jami farq</div><div class="v ${d.farq > 0 ? 'red' : ''}">${sgn(d.farq, 0)} $</div></div>
-      <div class="card"><div class="lb">O'rtacha kunlik sarf</div><div class="v">${usd(d.temp)}</div></div>
-      <div class="card"><div class="lb">Taxminiy tugash</div><div class="v">${dmy(d.tugash)}</div></div>
-    </div>
-    ${(d.fiks || []).length ? `<div class="sec">Vozvrat · fiksatsiya bo'yicha (tosh turi: summa va gramm)</div>
-    ${d.fiks.map(f => `<div class="card">
-      <div class="rw"><b style="font-size:14px">📑 ${E(L(f.nom))}</b><span class="mut">${usd(f.summa)}</span></div>
+    </div>` : ''}`;
+    const davr = dv ? `
+    <div class="card davr">
+      <div class="mut">Tanlangan: ${dv.oy_nomi || 'barcha oylar'} · ${dv.tr.length ? 'pul ' + dv.tr.map(n => '№' + n).join(', ') : 'barcha pullar'}</div>
+      <div class="g2" style="margin-top:10px">
+        <div><div class="lb">Fakturalar</div><div class="v">${fmt(dv.faktura_soni)}</div><div class="mut">${fmt(dv.n)} pozitsiya · ${fmt(dv.gramm, 2)} gr</div></div>
+        <div><div class="lb">Faktura qiymati</div><div class="v">${usd(dv.fakt, 2)}</div><div class="mut">hisob bo'yicha ${usd(dv.hisob, 2)}</div></div>
+        <div><div class="lb">Farq (ortiqcha)</div><div class="v ${dv.farq > 0.5 ? 'red' : ''}">${sgn(dv.farq)} $</div><div class="mut">${dv.bad_n} ta farqli pozitsiya</div></div>
+        <div><div class="lb">Vozvrat berilgan</div><div class="v grn">${fmt(dv.vozvrat_n)} ta</div><div class="mut">${usd(dv.vozvrat_summa, 2)}</div></div>
+      </div></div>` : '';
+    /* 2. Oylar bo'yicha */
+    const oylar = (d.oylar || []).filter(Boolean);
+    const oyB = oylar.length ? `<div class="sec">Oylar bo'yicha</div>` + oylar.map((m, i) => oyHtml(m, i === 0)).join('') : '';
+    /* 3. Pullar va vozvratlar holati */
+    const R = d.royxat || [];
+    const holB = fold('h_hol', '📋 Pullar va vozvratlar holati', `${R.filter(x => x.kod === 'ochiq').length} ochiq · ${R.filter(x => x.kod !== 'ochiq').length} yopiq`, royxatHtml(R, true), false);
+    /* 4. Vozvrat qoldig'i */
+    const fk = (d.fiks || []).map(f => `<div class="card">
+      <div class="rw"><b style="font-size:14px">📑 Fiksatsiya · ${E(L(f.nom))}</b><span class="mut">${usd(f.summa)}</span></div>
       <div class="bar" style="margin-top:8px"><i style="width:${Math.max(1, Math.min(100, f.summa ? f.used / f.summa * 100 : 0))}%"></i></div>
       <div class="rw mut" style="font-size:12px"><span>berilgan ${usd(f.used)} · ${fmt(f.n)} ta</span><span>qoldi ${usd(f.left)}</span></div>
       <table style="margin-top:8px;font-size:12px"><tr><th>Tur</th><th>Summa qoldi</th><th>Gramm qoldi</th><th>$/gr</th></tr>
       ${f.turlar.map(t => `<tr><td>${E(L(t.tur))}</td><td>${usd(t.left)}<div class="mut">${usd(t.summa)} dan</div></td>
         <td>${t.gramm ? fmt(t.gramm - t.g, 2) + '<div class="mut">' + fmt(t.gramm, 2) + ' dan</div>' : '—'}</td>
-        <td class="${t.ort && t.fiks_1gr && t.ort > t.fiks_1gr + 0.3 ? 'red' : ''}">${t.ort ? fmt(t.ort, 2) : '—'}<div class="mut">fiks. ${t.fiks_1gr ? fmt(t.fiks_1gr, 2) : '—'}</div></td></tr>`).join('')}</table>
-    </div>`).join('')}` : ''}
-    ${(d.vozvrat && d.vozvrat.n) || (d.qismlar || []).length ? `<div class="sec">Vozvrat</div>
-    ${d.vozvrat && d.vozvrat.n ? `<div class="card">
-      <div class="mut" style="margin-bottom:8px">1-qism · ro'yxat bo'yicha</div>
-      <div class="g2">
-        <div><div class="lb">Do'konlar qaytargan</div><div class="v">${fmt(d.vozvrat.n)} ta</div><div class="mut">${usd(d.vozvrat.summa)}</div></div>
-        <div><div class="lb">Boshqa do'konga berilgan</div><div class="v grn">${fmt(d.vozvrat.berilgan_n)} ta</div><div class="mut">${usd(d.vozvrat.berilgan_summa)}</div></div>
-      </div>
-      <div class="rw" style="margin-top:10px"><span class="mut">Gavhar'da qolgan (hali berilmagan)</span><b>${d.vozvrat.yopilgan ? 'Yakunlangan ' + dm(d.vozvrat.yopilgan) : fmt(d.vozvrat.qolgan_n) + ' ta · ' + usd(d.vozvrat.qolgan_summa)}</b></div>
-      <div class="mut" style="font-size:12px;margin-top:6px">Yangi ro'yxat faylini botga tashlang — qo'shilgan (+) va chiqqan (−) tovarlarni o'zi topadi.</div>
-      ${can('transh_qoshish') ? `<div style="margin-top:10px">${d.vozvrat.yopilgan
-        ? `<button class="btn2" onclick="vqYop(1, false)">Qayta ochish</button>`
-        : `<button class="btn2" onclick="vqYop(1, true)">Vozvratni yakunlash</button> <span class="mut" style="font-size:12px">tugasa bosing</span>`}</div>` : ''}
-    </div>` : ''}
-    ${(d.qismlar || []).map(q => `<div class="card">
-      <div class="mut" style="margin-bottom:8px">${q.no}-qism · summa bo'yicha (birja ${q.birja} narxida)</div>
-      <div class="g2">
-        <div><div class="lb">Jami vozvrat</div><div class="v">${usd(q.summa)}</div></div>
-        <div><div class="lb">Do'konlarga berilgan</div><div class="v grn">${usd(q.berilgan)}</div><div class="mut">${fmt(q.n)} ta tovar</div></div>
-      </div>
+        <td>${t.fiks_1gr ? fmt(t.fiks_1gr, 2) : '—'}</td></tr>`).join('')}</table></div>`).join('');
+    const qm = (d.qismlar || []).map(q => `<div class="card">
+      <div class="rw"><b style="font-size:14px">↩️ Vozvrat ${q.no}-qism · birja ${q.birja}</b><span class="mut">${usd(q.summa)}</span></div>
       <div class="bar"><i style="width:${Math.max(1, Math.min(100, q.summa ? q.berilgan / q.summa * 100 : 0))}%"></i></div>
-      <div class="rw" style="margin-top:6px"><span class="mut">Gavhar'da qolgan</span><b>${q.yopilgan ? 'Yakunlangan ' + dm(q.yopilgan) : usd(q.qolgan)}</b></div>
-      ${can('transh_qoshish') ? `<div style="margin-top:10px">${q.yopilgan
-        ? `<button class="btn2" onclick="vqYop(${q.no}, false)">Qayta ochish</button>`
-        : `<button class="btn2" onclick="vqYop(${q.no}, true)">Vozvratni yakunlash</button> <span class="mut" style="font-size:12px">tugasa bosing</span>`}</div>` : ''}
-    </div>`).join('')}` : ''}
-    ${d.oy_pul && d.oy_pul.pullar.length ? `<div class="sec">Oy yakuni · ${E(d.oy_pul.nomi)}</div>
-    <div class="card">
-      <div class="lb">Shu oyda Gavhar bergan tovar</div>
-      <div class="big" style="font-size:26px">${usd(d.oy_pul.tovar.summa, 2)}</div>
-      <div class="mut">${fmt(d.oy_pul.tovar.faktura)} ta faktura · ${fmt(d.oy_pul.tovar.dokon)} ta do'kon · ${fmt(d.oy_pul.tovar.n)} ta tovar · ${fmt(d.oy_pul.tovar.gramm, 2)} gr</div>
-      <div class="g2" style="margin-top:10px">
-        <div><div class="lb">Puldan (transhlardan)</div><div class="v">${usd(d.oy_pul.tovar.puldan)}</div></div>
-        <div><div class="lb">Vozvrat tovar</div><div class="v grn">${usd(d.oy_pul.tovar.vozvrat)}</div></div>
-      </div>
-      ${d.oy_pul.tovar.xato_n ? `<div class="red" style="font-size:13px;margin-top:6px">❌ ${d.oy_pul.tovar.xato_n} ta tovar narxi xato${d.oy_pul.tovar.ortiqcha ? ` · ortiqcha ${usd(d.oy_pul.tovar.ortiqcha, 2)}` : ''}</div>` : ''}
+      <div class="rw mut" style="font-size:12px"><span>berilgan ${usd(q.berilgan)} · ${fmt(q.n)} ta</span><span>${q.yopilgan ? 'Yakunlangan ' + dm(q.yopilgan) : 'qoldi ' + usd(q.qolgan)}</span></div></div>`).join('');
+    const vzB = (fk || qm) ? fold('h_vz', "↩️ Vozvratlar", 'qoldi ' + usd(vzQoldi), qm + fk +
+      `<div class="mut" style="font-size:12px;margin:0 4px">Tahrirlash, qo'shish, o'chirish — Transhlar bo'limida.</div>`, false) : '';
+    /* 5. Umumiy ko'rsatkichlar */
+    const statB = fold('h_stat', "📊 Umumiy ko'rsatkichlar", `${fmt(d.faktura_soni)} faktura`, `
+    <div class="g2">
+      <div class="card"><div class="lb">Jami berilgan pul</div><div class="v">${usd(d.given)}</div></div>
+      <div class="card"><div class="lb">Puldan olingan tovar</div><div class="v">${usd(d.used)}</div>
+        <div class="mut">Jami tovar ${usd(d.jami_tovar)}${d.vozvrat_tovar ? ' · vozvrat ' + usd(d.vozvrat_tovar) : ''}</div></div>
+      <div class="card"><div class="lb">Qimmat yozilgan</div><div class="v red">${sgn(d.qimmat)} $</div></div>
+      <div class="card"><div class="lb">Arzon yozilgan</div><div class="v">${sgn(d.arzon)} $</div></div>
+      <div class="card"><div class="lb">O'rtacha kunlik sarf</div><div class="v">${usd(d.temp)}</div></div>
+      <div class="card"><div class="lb">Pul taxminan tugaydi</div><div class="v">${dmy(d.tugash)}</div></div>
     </div>
-    <div class="card">
-      <div class="lb" style="margin-bottom:6px">Pullar — oy bo'yicha</div>
-      <table><tr><th>Pul</th><th>Oy boshida</th><th>Ishlatildi</th><th>Oy oxirida</th></tr>
-      ${d.oy_pul.pullar.map(p => `<tr><td><b>№${p.no}</b> <span class="mut">${dm(p.sana)}</span></td>
-        <td>${p.yangi ? '<span class="mut">berildi</span> ' : ''}${fmt(p.boshida)}</td><td>${fmt(p.ishlatildi)}</td>
-        <td>${p.oxirida <= 1 ? '<span class="grn">tugadi</span>' : `<b>${fmt(p.oxirida)}</b>`}</td></tr>`).join('')}
-      <tr><td><b>Jami</b></td><td></td><td><b>${fmt(d.oy_pul.pullar.reduce((s, p) => s + p.ishlatildi, 0))}</b></td>
-        <td><b>${fmt(d.oy_pul.pullar.reduce((s, p) => s + Math.max(p.oxirida, 0), 0))}</b></td></tr></table>
-      <div class="mut" style="font-size:12px;margin-top:6px">«Oy oxirida» — keyingi oyga o'tgan qoldiq. Boshqa oyni tepadagi oy filtridan tanlang.</div>
-      ${d.oy_pul.yetmadi.n ? `<div class="red" style="font-size:13px;margin-top:6px">⚠ ${d.oy_pul.yetmadi.n} ta tovar (${usd(d.oy_pul.yetmadi.summa)}) uchun pul yetmadi</div>` : ''}
-    </div>` : ''}
-    <div class="sec">Narx nazorati</div>
-    <div class="card">
-      <div class="g2"><div><div class="lb">Qimmat yozilgan (zarar)</div><div class="v red">${sgn(d.qimmat)} $</div></div>
-        <div><div class="lb">Arzon yozilgan</div><div class="v">${sgn(d.arzon)} $</div></div></div>
-      <div class="rw" style="margin-top:10px"><span class="mut">${fmt(d.n)} pozitsiya · ${d.filiallar} filial · chegara ±${d.chegara} $/gr</span>
-        <button class="btn2" onclick="navTo('xato')">${d.bad_n} ta farq ›</button></div>
-    </div>
-    <div class="sec">Kunlik olingan tovar</div>
-    <div class="card"><canvas id="ch" height="190"></canvas></div>
-    <div class="sec">Tur bo'yicha</div>
-    <div class="card"><table><tr><th>Tur</th><th>Pozitsiya</th><th>Gramm</th><th>Farqli</th></tr>
-      ${d.turlar.map(t => `<tr><td>${E(t.tur)}</td><td>${fmt(t.n)}</td><td>${fmt(t.gramm, 1)}</td><td class="${t.bad ? 'red' : 'mut'}">${t.bad || '—'}</td></tr>`).join('')}</table></div>
-    <button class="btn" id="rep">Excel hisobotni chatga yuborish</button>
+    <div class="card"><div class="rw"><span class="mut">${fmt(d.n)} pozitsiya · ${d.filiallar} filial · chegara ±${d.chegara} $/gr</span>
+        <button class="btn2" onclick="navTo('xato')">${d.bad_n} ta farq ›</button></div></div>
+    <div class="card"><div class="lb" style="margin-bottom:6px">Kunlik olingan tovar</div><canvas id="ch" height="190"></canvas></div>
+    <div class="card"><div class="lb" style="margin-bottom:6px">Tur bo'yicha</div><table><tr><th>Tur</th><th>Pozitsiya</th><th>Gramm</th><th>Farqli</th></tr>
+      ${d.turlar.map(t => `<tr><td>${E(L(t.tur))}</td><td>${fmt(t.n)}</td><td>${fmt(t.gramm, 1)}</td><td class="${t.bad ? 'red' : 'mut'}">${t.bad || '—'}</td></tr>`).join('')}</table></div>`, false);
+    el.innerHTML = filterBar() + davr + top + oyB + `<div class="sec">Batafsil</div>` + holB + vzB + statB + `
+    <button class="btn" id="rep" style="margin-top:12px">Excel hisobotni chatga yuborish</button>
     <div class="mut" style="text-align:center;margin:10px 0">Faktura: Excel faylni bot chatiga tashlang</div>`;
     if (!can('hisobot')) $('#rep').style.display = 'none';
     $('#rep').onclick = async e => { const b = e.target; b.disabled = true; b.textContent = 'Yuborilmoqda…';
       try { await api('/api/hisobot', {}); haptic('success'); toast('Hisobot chatga yuborildi'); } catch (er) { toast(er.message); }
       b.disabled = false; b.textContent = 'Excel hisobotni chatga yuborish'; };
     bindFilter(el);
-    drawChart(d.kunlik);
+    window.__kun = d.kunlik;
+    if (foldOpen('h_stat', false)) drawChart(d.kunlik);
   } catch (e) { fail(el, e); }
 }
 function drawChart(k) {
@@ -641,6 +639,7 @@ async function loadTransh() {
           <div class="mut" style="font-size:12px;margin-top:6px">Saqlangach hamma fakturalar yangi qiymat bo'yicha qayta hisoblanadi.</div>
         </div>` : ''}
       </div>`; }).join('')}
+    ${vzHtml(d)}
     <div class="sec">Sozlama</div>
     <div class="card"><div class="rw"><div style="flex:1"><div class="sm">Ruxsat etilgan farq, $/gr</div><div class="mut">Undan katta farq — xatolik</div></div>
       <input id="cheg" type="number" step="0.05" value="${d.chegara}" style="width:90px"><button class="btn2" id="chegb">Saqlash</button></div></div>`;
@@ -654,6 +653,78 @@ async function loadTransh() {
     $('#chegb').onclick = async () => { try { await api('/api/chegara', {v: $('#cheg').value}); haptic('success'); toast('Saqlandi'); invalidate(); } catch (e) { toast(e.message); } };
   } catch (e) { fail(el, e); }
 }
+/* ---------- TRANSHLAR bo'limida VOZVRATLAR: 2-qism (summa+narx) va oy fiksatsiyalari — ko'rish, tahrirlash, o'chirish ---------- */
+let VZEDIT = null, VZNEW = null;
+function vzHtml(d) {
+  const tog = (on, fn) => can('transh_qoshish') ? `<label class="rw" style="gap:6px;font-size:12px;cursor:pointer"><input type="checkbox" ${on ? 'checked' : ''} onchange="${fn}" style="width:18px;height:18px">Tekshiruvda</label>` : '';
+  const btns = (ed, del) => `<div class="rw tract" style="margin-top:12px;justify-content:flex-start;gap:6px;flex-wrap:wrap">
+      <button class="btn2" onclick="${ed}">✏️ Tahrirlash</button><button class="btn2" style="color:var(--red)" onclick="${del}">🗑 O'chirish</button></div>`;
+  const bar = (u, s) => `<div class="bar"><i style="width:${Math.max(1, Math.min(100, s ? (u || 0) / s * 100 : 0))}%"></i></div>`;
+  const qs = (d.vozvratlar || []).map(q => { const off = q.faol === false, ek = 'q' + q.no;
+    return `<div class="card" style="${off ? 'opacity:.6' : ''}">
+      <div class="rw"><span class="mut" style="font-size:12px">↩️ summa va narx bo'yicha${off ? ' · ⏸ o\'chirilgan' : ''}</span>${tog(!off, `vzFaol(${q.no}, this.checked)`)}</div>
+      <div class="rw"><b>Vozvrat ${q.no}-qism · ${dmy(q.sana)}</b><span class="bd ${off ? 'n' : q.left <= 1 ? 'n' : 'g'}">${off ? "O'chirilgan" : q.yopilgan ? 'Yakunlangan ' + dm(q.yopilgan) : q.left <= 1 ? 'Tugagan' : 'Ochiq'}</span></div>
+      <div class="mut">${usd(q.summa)} · birja ${q.birja}</div>${bar(q.used, q.summa)}
+      <div class="rw mut"><span>berilgan ${usd(q.used)} · ${fmt(q.n)} ta</span><span>qoldi ${usd(q.left)}</span></div>
+      <table style="margin-top:10px"><tr><th>Tur</th><th>1 gr narxi</th></tr>
+        ${Object.entries(q.narxlar || {}).map(([k, v]) => `<tr><td>${k === 'Вакс' ? "Vaks / ko'zsiz" : E(L(k))}</td><td><b>${fmt(v, 2)}</b></td></tr>`).join('')}</table>
+      ${btns(`vzEdit('${ek}')`, `vzDel(${q.no}, ${q.summa})`)}
+      ${VZEDIT === ek ? `<div style="background:var(--bg);border-radius:12px;padding:10px 12px;margin-top:10px">
+        <div class="g2"><div><label class="f">Sana</label><input type="date" id="vqe_s" value="${q.sana || ''}"></div>
+          <div><label class="f">Summa, $</label><input id="vqe_sum" inputmode="decimal" value="${q.summa}"></div></div>
+        <label class="f">Birja narxi 999, $/gr</label><input id="vqe_b" inputmode="decimal" value="${q.birja}">
+        <label class="f" style="margin-top:10px">1 gr narxlari, $</label>
+        <div class="g2">${TYPES.map(x => `<div><label class="f" style="margin-top:2px">${x === 'Вакс' ? "Vaks / ko'zsiz" : L(x)}</label><input class="vqe_p" data-t="${x}" inputmode="decimal" value="${(q.narxlar || {})[x] != null ? q.narxlar[x] : ''}"></div>`).join('')}</div>
+        <div class="rw" style="gap:8px;margin-top:10px"><button class="btn2" style="flex:1;padding:11px" onclick="VZEDIT=null;loadTransh()">Bekor</button>
+          <button class="btn" style="flex:1" onclick="vzSave(${q.no})">Saqlash</button></div></div>` : ''}
+    </div>`; }).join('');
+  const fs = (d.fiks || []).map(f => { const off = f.faol === false, ek = 'f' + f.oy;
+    return `<div class="card" style="${off ? 'opacity:.6' : ''}">
+      <div class="rw"><span class="mut" style="font-size:12px">📑 fiksatsiya · tosh turi: summa va gramm${off ? ' · ⏸ o\'chirilgan' : ''}</span>${tog(!off, `fkFaol('${f.oy}', this.checked)`)}</div>
+      <div class="rw"><b>Vozvrat fiksatsiya · ${E(L(f.nom))}</b><span class="bd ${off ? 'n' : f.left <= 1 ? 'n' : 'g'}">${off ? "O'chirilgan" : f.left <= 1 ? 'Tugagan' : 'Ochiq'}</span></div>
+      <div class="mut">${usd(f.summa)}</div>${bar(f.used, f.summa)}
+      <div class="rw mut"><span>berilgan ${usd(f.used)} · ${fmt(f.n)} ta</span><span>qoldi ${usd(f.left)}</span></div>
+      <table style="margin-top:10px;font-size:12px"><tr><th>Tur</th><th>Summa</th><th>Gramm</th><th>$/gr</th><th>Qoldi</th></tr>
+        ${f.turlar.map(t => `<tr><td>${E(L(t.tur))}</td><td>${usd(t.summa)}</td><td>${t.gramm ? fmt(t.gramm, 2) : '—'}</td><td>${t.narx ? fmt(t.narx, 2) : '—'}</td>
+          <td>${usd(t.left)}${t.gramm ? '<div class="mut">' + fmt(t.gramm - (t.g || 0), 2) + ' gr</div>' : ''}</td></tr>`).join('')}</table>
+      ${btns(`vzEdit('${ek}')`, `fkDel('${f.oy}', '${E(L(f.nom))}')`)}
+      ${VZEDIT === ek ? `<div style="background:var(--bg);border-radius:12px;padding:10px 12px;margin-top:10px">
+        <div class="mut" style="font-size:12px">Har tur uchun summa va gramm. Summani bo'sh qoldirsangiz — o'sha tur o'chadi.</div>
+        ${['Бриллиант', 'Фианит', 'Вакс', 'Дорика', 'Браслет', 'Детский', 'Ван Клиф'].map(k => { const t = f.turlar.find(x => x.key === k) || {};
+          return `<div class="g2" style="margin-top:6px"><div><label class="f">${k === 'Браслет' ? 'Braslet/Zanjir' : L(k)} · summa $</label><input class="fke_s" data-t="${k}" inputmode="decimal" value="${t.summa != null ? t.summa : ''}"></div>
+            <div><label class="f">gramm</label><input class="fke_g" data-t="${k}" inputmode="decimal" value="${t.gramm != null ? t.gramm : ''}"></div></div>`; }).join('')}
+        <div class="rw" style="gap:8px;margin-top:10px"><button class="btn2" style="flex:1;padding:11px" onclick="VZEDIT=null;loadTransh()">Bekor</button>
+          <button class="btn" style="flex:1" onclick="fkSave('${f.oy}')">Saqlash</button></div></div>` : ''}
+    </div>`; }).join('');
+  return `<div class="sec">Vozvratlar · avval ${(d.vozvratlar || []).length ? 'summa-qism, keyin ' : ''}fiksatsiya</div>
+    <div class="mut" style="font-size:12px;margin:-4px 4px 8px">Pul narxiga tushmagan tovar — vozvrat narxi bo'yicha tekshiriladi. Fiksatsiyada 1 gr narxi = summa ÷ gramm.</div>
+    ${qs}${fs}
+    <div class="rw tract" style="gap:6px;flex-wrap:wrap">
+      <button class="btn2" style="flex:1;padding:11px" onclick="VZNEW=VZNEW==='f'?null:'f';loadTransh()">➕ Yangi fiksatsiya (oy)</button>
+      <button class="btn2" style="flex:1;padding:11px" onclick="VZNEW=VZNEW==='q'?null:'q';loadTransh()">➕ Yangi vozvrat (summa+narx)</button></div>
+    ${VZNEW === 'f' ? `<div class="card"><div class="mut" style="font-size:12px">Gavhar jadvalini nusxa qilib qo'ying: oy nomi (Сентябрь), keyin har qatorda segment, gramm, shtuk, summa. Shu oy bo'lsa — qayta yoziladi.</div>
+        <textarea id="fkm" rows="8" style="width:100%;margin-top:6px;font-size:13px" placeholder="Ноябрь\nБриллиант 3 310,22 732 $ 315 471,77\nВакс 2 348,83 577 $ 219 071,37"></textarea>
+        <button class="btn" style="margin-top:8px" onclick="fkNew()">Saqlash</button></div>` : ''}
+    ${VZNEW === 'q' ? `<div class="card"><div class="g2"><div><label class="f">Summa, $</label><input id="vqs" inputmode="decimal" placeholder="208422"></div>
+          <div><label class="f">Birja (tillo) narxi</label><input id="vqb" inputmode="decimal" placeholder="149.94"></div></div>
+        <label class="f" style="margin-top:10px">1 gr narxlari, $</label>
+        <div class="g2">${TYPES.map(t => `<div><label class="f" style="margin-top:2px">${t === 'Вакс' ? "Vaks / ko'zsiz" : L(t)}</label><input class="vqp" data-t="${t}" inputmode="decimal"></div>`).join('')}</div>
+        <button class="btn" style="margin-top:10px" onclick="vzNew()">Saqlash</button></div>` : ''}`;
+}
+function vzEdit(k) { VZEDIT = VZEDIT === k ? null : k; loadTransh(); }
+const ask = msg => new Promise(res => tg && tg.showConfirm && tg.initData ? tg.showConfirm(msg, res) : res(confirm(msg)));
+async function vzDo(url, body, okMsg) { try { await api(url, body); haptic('success'); toast(okMsg); VZEDIT = null; VZNEW = null; invalidate(); loadTransh(); } catch (e) { toast(e.message); } }
+function vzFaol(no, faol) { vzDo('/api/vozvrat/faol', {no, faol}, faol ? `Vozvrat ${no}-qism yoqildi` : `Vozvrat ${no}-qism o'chirildi`); }
+function fkFaol(oy, faol) { vzDo('/api/fiks/faol', {oy, faol}, faol ? 'Fiksatsiya yoqildi' : "Fiksatsiya o'chirildi"); }
+function vzSave(no) { vzDo('/api/vozvrat/tahrir', {no, sana: $('#vqe_s').value, summa: $('#vqe_sum').value, birja: $('#vqe_b').value,
+  narxlar: Object.fromEntries([...document.querySelectorAll('.vqe_p')].filter(i => i.value).map(i => [i.dataset.t, i.value]))}, `Vozvrat ${no}-qism saqlandi`); }
+function fkSave(oy) { const T = {}; document.querySelectorAll('.fke_s').forEach(i => { const g = document.querySelector(`.fke_g[data-t="${i.dataset.t}"]`);
+  T[i.dataset.t] = {summa: i.value, gramm: g ? g.value : ''}; }); vzDo('/api/fiks/tahrir', {oy, turlar: T}, 'Fiksatsiya saqlandi'); }
+async function vzDel(no, summa) { if (await ask(`Vozvrat ${no}-qism (${fmt(summa)} $) ni butunlay o'chiraymi? Fakturalar qayta hisoblanadi.`)) vzDo('/api/vozvrat/ochir', {no}, `Vozvrat ${no}-qism o'chirildi`); }
+async function fkDel(oy, nom) { if (await ask(`${nom} fiksatsiyasini butunlay o'chiraymi? Fakturalar qayta hisoblanadi.`)) vzDo('/api/fiks/faol', {oy, ochir: true}, "Fiksatsiya o'chirildi"); }
+function fkNew() { vzDo('/api/fiks', {matn: ($('#fkm') || {}).value || ''}, 'Fiksatsiya saqlandi'); }
+function vzNew() { vzDo('/api/vozvrat/qism', {summa: $('#vqs').value, birja: $('#vqb').value,
+  narxlar: Object.fromEntries([...document.querySelectorAll('.vqp')].filter(i => i.value).map(i => [i.dataset.t, i.value]))}, 'Vozvrat saqlandi'); }
 let TREDIT = null;
 function trEdit(no) { TREDIT = TREDIT === no ? null : no; loadTransh(); }
 async function trSave(no) {
@@ -751,9 +822,7 @@ async function loadAdmin(d) {
     ADM = d;
     badge(d.pending.length);
     try { SOZ = await api('/api/sozlama'); } catch (e) { SOZ = null; }
-    el.innerHTML = sozlamaHtml() + `
-    <div class="sec">So'rovlar${d.pending.length ? ` · ${d.pending.length} ta` : ''}</div>
-    ${d.pending.length ? d.pending.map(p => `<div class="card alert">
+    el.innerHTML = (d.pending.length ? fold('a_sor', "📨 Yangi so'rovlar", d.pending.length + ' ta', `    ${d.pending.length ? d.pending.map(p => `<div class="card alert">
         <div class="rw"><b>${esc(p.name) || 'Noma\'lum'}</b><span class="mut">ID ${p.id}</span></div>
         <div class="mut" style="margin:4px 0 10px">Botga kirmoqchi — ruxsat berasizmi?</div>
         <div class="rw" style="gap:6px;justify-content:flex-start;flex-wrap:wrap">
@@ -762,8 +831,8 @@ async function loadAdmin(d) {
           <button class="btn2" style="background:var(--amb-bg);color:var(--amb)" onclick="adm('approve',${p.id},'admin')">👑 Admin</button>
           <button class="btn2" style="background:var(--red-bg);color:var(--red)" onclick="adm('reject',${p.id})">❌ Rad</button>
         </div></div>`).join('') : '<div class="card empty">Yangi so\'rov yo\'q</div>'}
-    <div class="sec">Foydalanuvchilar · ${d.users.length} ta</div>
-    <div class="card">${d.users.map(u => `<div style="padding:8px 0;border-bottom:1px solid var(--line)">
+`, true) : '')
+      + fold('a_us', '👥 Foydalanuvchilar va ruxsatlar', d.users.length + ' ta', `    <div class="card">${d.users.map(u => `<div style="padding:8px 0;border-bottom:1px solid var(--line)">
         <div class="rw"><div style="font-weight:600;min-width:0">${esc(u.name) || '—'}</div>${ROLE(u.role)}</div>
         ${u.role !== 'admin' && !u.asosiy ? `<div class="mut" style="font-size:12px">${PRESET_L[u.preset] || '⚙️ Maxsus ruxsat'}</div>` : ''}
         <div class="rw" style="margin-top:4px"><div class="mut">ID ${u.id}${u.sana ? ' · ' + dmy(u.sana) : ''}</div>
@@ -779,7 +848,8 @@ async function loadAdmin(d) {
           ${Object.entries(PERM_L).map(([k, t]) => `<label class="rw" style="justify-content:flex-start;gap:10px;padding:6px 0;font-size:14px">
             <input type="checkbox" style="width:20px;height:20px" ${(u.perms || []).includes(k) ? 'checked' : ''} onchange="permSet(${u.id}, this)" data-pk="${k}">${t}</label>`).join('')}
         </div>` : ''}`).join('')}</div>
-`;
+`, false)
+      + sozlamaHtml() + ``;
     if ($('#qc_tr')) qcFill();
   } catch (e) { fail(el, e); }
 }
@@ -790,7 +860,7 @@ function sozlamaHtml() {
   const row = (chk, on, title, sub, badge) => `<label class="rw" style="justify-content:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer;${on ? '' : 'opacity:.55'}">
       <input type="checkbox" ${on ? 'checked' : ''} onchange="${chk}" style="width:20px;height:20px;flex:none">
       <div style="flex:1;min-width:0"><div class="rw"><b style="font-size:14px">${title}</b>${badge || ''}</div><div class="mut" style="font-size:12px">${sub}</div></div></label>`;
-  return `<div class="sec">Tekshiruv sozlamasi</div>
+  return `<div class="sec">Sozlamalar</div>` + fold('a_tek', '⚙️ Qaysi pul va vozvrat ishlatiladi', `${SOZ.transhlar.filter(t => t.faol).length} pul · ${SOZ.vozvrat.filter(v => v.faol).length + (SOZ.fiks || []).filter(f => f.faol).length} vozvrat`, `
     <div class="card">
       <div class="mut" style="font-size:12px;margin-bottom:4px">Belgilanganlari bo'yicha tekshiriladi. Belgini olsangiz — o'sha pul yoki vozvrat hisobga kirmaydi.</div>
       <div class="sm" style="font-weight:600;margin-top:8px">💳 Pullar (transhlar) · ${SOZ.transhlar.length} ta</div>
@@ -805,33 +875,17 @@ function sozlamaHtml() {
       ${SOZ.vozvrat.map(v => row(`sozVz(${v.no}, this.checked)`, v.faol, `${v.no}-qism · ${L(v.nomi)}`,
           (v.no === 1 ? `${fmt(v.n)} ta tovar · ` : '') + `${usd(v.summa)} · berilgan ${usd(v.berilgan)} · qoldi ${usd(v.qolgan)}`,
           v.yopilgan ? `<span class="bd n">Yakunlangan</span>` : '')).join('')}
-      <button class="btn2" style="width:100%;padding:11px;margin-top:10px" onclick="VQFORM=!VQFORM;loadAdmin(ADM)">➕ Yangi vozvrat (summa va narxlar bo'yicha)</button>
-      ${VQFORM ? `<div style="background:var(--bg);border-radius:12px;padding:10px 12px;margin-top:8px">
-        <div class="g2"><div><label class="f">Summa, $</label><input id="vqs" inputmode="decimal" placeholder="208422"></div>
-          <div><label class="f">Birja (tillo) narxi</label><input id="vqb" inputmode="decimal" placeholder="149.94"></div></div>
-        <label class="f" style="margin-top:10px">1 gr narxlari, $</label>
-        <div class="g2">${TYPES.map(t => `<div><label class="f" style="margin-top:2px">${t === 'Вакс' ? "Vaks / ko'zsiz" : L(t)}</label><input class="vqp" data-t="${t}" inputmode="decimal"></div>`).join('')}</div>
-        <button class="btn" style="margin-top:10px" onclick="sozVqSave()">Saqlash</button></div>` : ''}
-      <div class="mut" style="font-size:12px;margin-top:10px">Vozvrat ro'yxatini (Excel) yangilash: Faktura → 📤 Excel yuklash → «Vozvrat ro'yxati».</div>
       <div class="sm" style="font-weight:600;margin-top:16px">📑 Vozvrat fiksatsiyasi (oy bo'yicha) · ${(SOZ.fiks || []).length} ta</div>
-      <div class="mut" style="font-size:12px;margin:2px 0 4px">Pul narxiga tushmagan tovar — vozvrat: o'sha oy fiksatsiyasidagi tosh turi qiymatidan ayiriladi (avval sentyabr, keyin oktyabr). «Braslet/Zanjir» — bilakuzuk va zanjirlar.</div>
       ${(SOZ.fiks || []).map(f => row(`sozFk('${f.oy}', this.checked)`, f.faol, `${L(f.nom)} · ${usd(f.summa)}`,
-          `ishlatildi ${usd(f.used)} (${fmt(f.n)} ta) · qoldi ${usd(f.left)}<br>` + f.turlar.map(t => `${L(t.tur)}: ${usd(t.summa)} → qoldi ${usd(t.left)}` +
-          (t.ort ? ` · o'rtacha ${t.ort.toFixed(2)} $/gr${t.fiks_1gr && t.ort > t.fiks_1gr + 0.3 ? ` <span style="color:var(--red)">⚠ fiksatsiyada ${t.fiks_1gr.toFixed(2)}</span>` : ''}` : '')).join('<br>'),
+          `ishlatildi ${usd(f.used)} (${fmt(f.n)} ta) · qoldi ${usd(f.left)}`,
           f.left <= 1 ? `<span class="bd n">Tugagan</span>` : '')).join('')}
-      <button class="btn2" style="width:100%;padding:11px;margin-top:10px" onclick="FKFORM=!FKFORM;loadAdmin(ADM)">➕ Fiksatsiya kiritish / yangilash</button>
-      ${FKFORM ? `<div style="background:var(--bg);border-radius:12px;padding:10px 12px;margin-top:8px">
-        <div class="mut" style="font-size:12px">Gavhar jadvalini Excel'dan nusxa qilib qo'ying: oy nomi (Сентябрь), keyin har qatorda segment, gramm, shtuk, summa. Shu oy qayta yoziladi.</div>
-        <textarea id="fkm" rows="8" style="width:100%;margin-top:6px;font-size:13px" placeholder="Сентябрь
-Бриллиант 3 310,22 732 $ 315 471,77
-Вакс 2 348,83 577 $ 219 071,37
-..."></textarea>
-        <button class="btn" style="margin-top:8px" onclick="sozFkSave()">Saqlash</button></div>` : ''}
-      <div class="sm" style="font-weight:600;margin-top:16px">💍 Bilak uzuk va zanjir seriyalari</div>
-      <div class="mut" style="font-size:12px;margin:4px 0 6px">Bu seriyalar <b>tosh narxida</b> hisoblanadi (vaks → Vaks narxi). Qolgan bilak uzuklar — Braslet narxi, zanjirlar — Dorika narxi.</div>
-      <div class="rw" style="gap:8px"><input id="seriya" value="${esc((SOZ.seriya_tosh || []).join(', '))}" placeholder="QSG, QSW, QSF, QQF, ZSG, QQW" style="flex:1">
+      <div class="mut" style="font-size:12px;margin-top:10px">➕ Vozvrat qo'shish, tahrirlash, o'chirish — <a href="#" onclick="event.preventDefault();show('transh')">Transhlar bo'limida</a>.</div>
+    </div>`, false)
+    + fold('a_ser', '💍 Bilak uzuk va zanjir narxi', (SOZ.seriya_tosh || []).length ? (SOZ.seriya_tosh || []).length + ' ta istisno' : 'Braslet / Dorika', `<div class="card">
+      <div class="mut" style="font-size:12px;margin:4px 0 6px">Hozir: <b>hamma bilak uzuk — Braslet narxi, hamma zanjir — Dorika narxi</b> (vaks toshli QSG, ZSG ham). Faqat istisno kerak bo'lsa, seriyani yozing — u tosh narxida hisoblanadi.</div>
+      <div class="rw" style="gap:8px"><input id="seriya" value="${esc((SOZ.seriya_tosh || []).join(', '))}" placeholder="istisno yo'q" style="flex:1">
         <button class="btn2" onclick="sozSeriya()">Saqlash</button></div>
-    </div>
+    </div>`, false) + `
     ${qqsAdminHtml()}
     ${qoidalarHtml()}`;
 }
