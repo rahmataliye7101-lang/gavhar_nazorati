@@ -65,7 +65,7 @@ PERM_MAP = {("GET", "/api/holat"): "holat", ("GET", "/api/fakturalar"): "faktura
             ("POST", "/api/transh"): "transh_qoshish", ("POST", "/api/transh/yop"): "transh_qoshish",
             ("POST", "/api/chegara"): "transh_qoshish", ("POST", "/api/vozvrat/yop"): "transh_qoshish", ("POST", "/api/transh/faol"): "transh_qoshish", ("POST", "/api/transh/ochir"): "transh_qoshish",
             ("POST", "/api/transh/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/faol"): "transh_qoshish",
-            ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("POST", "/api/fiks"): "vozvrat_yuklash", ("POST", "/api/fiks/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/ochir"): "transh_qoshish", ("POST", "/api/fiks/faol"): "vozvrat_yuklash", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/seriya"): "transh_qoshish", ("POST", "/api/qqs"): "transh_qoshish", ("POST", "/api/qqs/metall"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
+            ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("POST", "/api/fiks"): "vozvrat_yuklash", ("GET", "/api/vozvrat/tovarlar"): "transhlar", ("POST", "/api/vozvrat/excel"): "hisobot", ("POST", "/api/fiks/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/ochir"): "transh_qoshish", ("POST", "/api/fiks/faol"): "vozvrat_yuklash", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/seriya"): "transh_qoshish", ("POST", "/api/qqs"): "transh_qoshish", ("POST", "/api/qqs/metall"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
             ("POST", "/api/xatolar/excel"): "hisobot", ("POST", "/api/faktura/excel"): "hisobot"}
 
 
@@ -335,7 +335,13 @@ async def api_xatolar(request):
     tr_f, oy = parse_filter(request)
     rows, _ = apply_filter(rows, trs, tr_f, oy)
     bad = sorted([r for r in rows if str(r.get("holat", "")).startswith("⚠")], key=lambda r: -abs(r.get("farq") or 0))
-    return web.json_response({"chegara": cfg.get("chegara_usd_gr", 0.3), "rows": [row_json(r) for r in bad]})
+    out = []
+    for r in bad:
+        j = row_json(r)
+        j["xato_nima"], j["xato_izoh"] = N.xato_turi_aniq(r, cfg)
+        out.append(j)
+    turlar = [{**x, "gramm": r2(x["gramm"]), "farq": r2(x["farq"])} for x in N.xato_turlari(bad, cfg)]
+    return web.json_response({"chegara": cfg.get("chegara_usd_gr", 0.3), "rows": out, "turlar": turlar})
 
 
 async def _send_doc(uid, path, caption):
@@ -423,9 +429,25 @@ async def api_yuklash(request):
             out = Path(td) / f"Oylik_tekshiruv_{dt.date.today():%Y-%m-%d}.xlsx"
             mr, text = await asyncio.to_thread(N.oylik_tekshir, cfg, N.load_ledger(str(B.LEDGER)),
                                                N.load_returns(str(B.VOZVRAT)), [str(x) for x in paths], str(out))
+            kxl = None
+            try:  # дастур кирими ↔ ботдаги Gavhar фактуралари
+                led_ = N.load_ledger(str(B.LEDGER))
+                prog = []
+                for pth in paths:
+                    prog += N.read_invoice(str(pth), [])
+                if prog and led_:
+                    d0 = min(p["sana"] for p in prog if p.get("sana")); d1 = max(p["sana"] for p in prog if p.get("sana"))
+                    kr = await asyncio.to_thread(N.kirim_solishtir, [r for r in led_ if d0 <= (r.get("sana") or "") <= d1], prog)
+                    text += "\n" + "\n".join(N.kirim_matn(kr))
+                    kxl = Path(td) / f"Kirim_solishtirish_{dt.date.today():%Y-%m-%d}.xlsx"
+                    await asyncio.to_thread(N.write_kirim_report, str(kxl), kr)
+            except Exception:
+                log.exception("kirim solishtirish")
             sent = False
             if mr and has("hisobot"):
                 await _send_doc(uid, out, "📑 Давр текшируви (mini app орқали юкланган)")
+                if kxl and kxl.exists():
+                    await _send_doc(uid, kxl, "🔄 Дастур кирими ↔ Gavhar фактуралари: нима қолиб кетгани")
                 bad = [r for r in mr if str(r.get("holat", "")).startswith("⚠")]
                 if bad:
                     ep = Path(td) / f"Xatoliklar_{dt.date.today():%Y-%m-%d}.xlsx"
@@ -438,6 +460,25 @@ async def api_yuklash(request):
         if eski:
             return web.json_response({"errors": [f"Бу фактура санаси ({N._dmy(eski)}) кундалик пуллардан олдин — эски фактура. "
                                                  "«🔎 Faqat tekshirish» ни танланг ёки «Avto aniqlash» да қолдиринг."]}, status=400)
+        # дастурдаги кирим файли (Gavhar фактуралари ботда бор) — реестрга қўшилмайди, фақат солиштирилади
+        try:
+            rows_ = []
+            for pth in paths:
+                rows_ += N.read_invoice(str(pth), [])
+            led_ = N.load_ledger(str(B.LEDGER))
+            ds_ = sorted({r["sana"] for r in rows_ if r.get("sana")})
+            if rows_ and led_ and ds_ and not any(str(r.get("faktura") or "").upper().startswith("GVR") for r in rows_):
+                kr = await asyncio.to_thread(N.kirim_solishtir, [r for r in led_ if ds_[0] <= (r.get("sana") or "") <= ds_[-1]], rows_)
+                if len(rows_) - len(kr["dasturda"]) >= 0.5 * len(rows_):
+                    text = ("🔄 Бу дастурдаги КИРИМ файли — реестрга қўшилмади (пул икки марта айирилмасин).\n"
+                            + "\n".join(N.kirim_matn(kr)))
+                    kxl = Path(td) / f"Kirim_solishtirish_{dt.date.today():%Y-%m-%d}.xlsx"
+                    await asyncio.to_thread(N.write_kirim_report, str(kxl), kr)
+                    if has("hisobot"):
+                        await _send_doc(uid, kxl, "🔄 Дастур кирими ↔ Gavhar фактуралари: нима қолиб кетгани")
+                    return web.json_response({"ok": True, "tur": "oylik", "text": text, "chatga": has("hisobot")})
+        except Exception:
+            log.exception("kirim aniqlash")
         # битта фактура — реестрга қўшилади
         async with B.LOCK:
             stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -581,6 +622,34 @@ async def api_transhlar(request):
                                     narx=r2(x["summa"] / x["gramm"]) if x.get("gramm") else None)
                                for k, x in f0.get("turlar", {}).items()]))
     return web.json_response({"chegara": cfg.get("chegara_usd_gr", 0.3), "transhlar": out, "vozvratlar": vq, "fiks": fk})
+
+
+async def api_vozvrat_tovarlar(request):
+    """Возврат манбаидан (q=2 ёки q=Ф2026-09) берилган товарлар рўйхати."""
+    cfg, rows, trs, s = await asyncio.to_thread(state)
+    q = request.query.get("q", "")
+    T = N.vozvrat_tovarlar(rows, q or None)
+    rs = [x for v in T.values() for x in v]
+    turlar = {}
+    for r in rs:
+        t = turlar.setdefault(r["tur"], {"tur": r["tur"], "n": 0, "gramm": 0.0, "summa": 0.0})
+        t["n"] += 1; t["gramm"] += r["gramm"] or 0; t["summa"] += r["summa"] or 0
+    return web.json_response({"q": q, "n": len(rs), "gramm": r2(sum(r["gramm"] or 0 for r in rs)), "summa": r2(sum(r["summa"] or 0 for r in rs)),
+                              "turlar": [{**t, "gramm": r2(t["gramm"]), "summa": r2(t["summa"])} for t in turlar.values()],
+                              "rows": [dict(sana=r["sana"], faktura=r["faktura"], filial=r["filial"], model=N.model_of(r["nomi"]), tur=r["tur"],
+                                            gramm=r2(r["gramm"]), narx=r2(r.get("fakt_1gr")), summa=r2(r["summa"]), nomi=r["nomi"]) for r in rs]})
+
+
+async def api_vozvrat_excel(request):
+    """Возвратдан берилган товарлар Excel файли — чатга юборилади."""
+    if TG_APP is None:
+        return web.json_response({"errors": ["Бот уланмаган"]}, status=503)
+    cfg, rows, trs, s = await asyncio.to_thread(state)
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / f"Vozvrat_berilgan_tovarlar_{dt.date.today():%Y-%m-%d}.xlsx"
+        await asyncio.to_thread(N.write_vozvrat_tovarlar, str(p), rows, cfg)
+        await _send_doc(request["uid"], p, "↩️ Возврат ҳисобидан берилган товарлар (ҳар манба — алоҳида варақ)")
+    return web.json_response({"ok": True})
 
 
 async def api_vozvrat_tahrir(request):
@@ -821,6 +890,7 @@ async def api_sozlama(request):
         vozvrat.append(dict(no=q["no"], nomi=f"Сумма бўйича (биржа {q['birja']})", summa=r2(q["summa"]), berilgan=r2(q["berilgan"]),
                             qolgan=r2(q["qolgan"]), faol=q.get("faol", True), yopilgan=q.get("yopilgan"), birja=q["birja"]))
     seriya = cfg.get("seriya_tosh") if cfg.get("seriya_tosh") is not None else N.SERIYA_TOSH_DEFAULT
+    model_tur = cfg.get("model_tur") if cfg.get("model_tur") is not None else N.MODEL_TUR_DEFAULT
     qq = []
     for t in sorted(cfg["transhlar"], key=lambda t: (t["sana"], t["no"])):
         x = qqs_json(t, cfg, rows)
@@ -829,7 +899,7 @@ async def api_sozlama(request):
                  turlar=[dict(tur=t["tur"], summa=r2(t["summa"]), gramm=t["gramm"], used=r2(t["used"]), left=r2(t["left"]), n=t["n"],
                               ort=r2(t["ort"]) if t["ort"] else None, fiks_1gr=r2(t["fiks_1gr"]) if t["fiks_1gr"] else None)
                          for t in f["turlar"]]) for f in N.fiks_stats(cfg)]
-    return web.json_response({"transhlar": tr, "vozvrat": vozvrat, "seriya_tosh": seriya, "qqs": N.qqs_cfg(cfg), "qqs_pullar": qq,
+    return web.json_response({"transhlar": tr, "vozvrat": vozvrat, "seriya_tosh": seriya, "model_tur": model_tur, "qqs": N.qqs_cfg(cfg), "qqs_pullar": qq,
                               "fiks": fiks})
 
 
@@ -872,8 +942,20 @@ async def api_seriya(request):
     async with B.LOCK:
         cfg = B.load_cfg()
         cfg["seriya_tosh"] = lst
+        if "model" in b:  # «ZSG001491=Дорика, QSG001492=Дорика» ёки «ZSG001491 ZSG001492» (Дорика)
+            mt = {}
+            for part in re.split(r"[,;\n]+", str(b.get("model") or "")):
+                part = part.strip()
+                if not part:
+                    continue
+                m_, _, t_ = part.partition("=")
+                t_ = (t_.strip() or "Дорика").capitalize()
+                for m1 in m_.split():
+                    mt[m1.strip().upper()] = {"Dorika": "Дорика", "Braslet": "Браслет", "Vaks": "Вакс", "Brilliant": "Бриллиант",
+                                              "Fianit": "Фианит"}.get(t_, t_)
+            cfg["model_tur"] = mt
         B.save_cfg(cfg)
-    return web.json_response({"ok": True, "seriya_tosh": lst})
+    return web.json_response({"ok": True, "seriya_tosh": lst, "model_tur": cfg.get("model_tur")})
 
 
 async def api_vozvrat_faol(request):
@@ -1089,6 +1171,8 @@ def make_web():
     app.router.add_post("/api/vozvrat/faol", api_vozvrat_faol)
     app.router.add_post("/api/vozvrat/qism", api_vozvrat_qism)
     app.router.add_post("/api/fiks", api_fiks)
+    app.router.add_get("/api/vozvrat/tovarlar", api_vozvrat_tovarlar)
+    app.router.add_post("/api/vozvrat/excel", api_vozvrat_excel)
     app.router.add_post("/api/fiks/tahrir", api_fiks_tahrir)
     app.router.add_post("/api/vozvrat/tahrir", api_vozvrat_tahrir)
     app.router.add_post("/api/vozvrat/ochir", api_vozvrat_ochir)

@@ -1072,6 +1072,20 @@ async def handle_oylik_file(update: Update, path, qoshish_tugma=False):
         except Exception:
             log.exception("oylik")
             return await msg.reply_text("❌ Файлни ўқиб бўлмади. Excel (.xlsx) приход эканини текширинг.")
+        # дастур кирими ↔ ботдаги Gavhar фактуралари (шу файл саналари оралиғида): нима қолиб кетгани
+        kirim_xl = None
+        try:
+            prog = []
+            for pth in paths:
+                prog += nazorat.read_invoice(pth, [])
+            if prog and ledger:
+                d0 = min(p["sana"] for p in prog if p.get("sana")); d1 = max(p["sana"] for p in prog if p.get("sana"))
+                kr = await asyncio.to_thread(nazorat.kirim_solishtir, [r for r in ledger if d0 <= (r.get("sana") or "") <= d1], prog)
+                text += "\n" + "\n".join(nazorat.kirim_matn(kr))
+                kirim_xl = Path(td) / f"Kirim_solishtirish_{dt.date.today():%Y-%m-%d}.xlsx"
+                await asyncio.to_thread(nazorat.write_kirim_report, str(kirim_xl), kr)
+        except Exception:
+            log.exception("kirim solishtirish")
         if qoshish_tugma and mr:
             chat = update.effective_chat.id
             kdir = tempfile.mkdtemp()
@@ -1093,6 +1107,9 @@ async def handle_oylik_file(update: Update, path, qoshish_tugma=False):
         if mr and out.exists() and has_perm(update.effective_user.id, "hisobot"):
             with open(out, "rb") as f:
                 await msg.reply_document(f, filename=out.name, caption="📑 Ойлик текширув")
+            if kirim_xl and kirim_xl.exists():
+                with open(kirim_xl, "rb") as f:
+                    await msg.reply_document(f, filename=kirim_xl.name, caption="🔄 Дастур кирими ↔ Gavhar фактуралари: нима қолиб кетгани")
             bad = [r for r in mr if str(r.get("holat", "")).startswith("⚠")]
             if bad:
                 ep = Path(td) / f"Oylik_xatoliklar_{dt.date.today():%Y-%m-%d}.xlsx"
@@ -1218,6 +1235,18 @@ def fiks_holat_matn(cfg=None):
 @need("holat")
 async def fiks_cmd(update: Update, ctx):
     await send_long(update.message, fiks_holat_matn())
+    try:  # возврат ҳисобидан берилган товарлар — Excel (ҳар манба алоҳида варақ)
+        cfg = load_cfg()
+        rows, _ = nazorat.compute(cfg, nazorat.load_ledger(str(LEDGER)), nazorat.load_returns(str(VOZVRAT)))
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / f"Vozvrat_berilgan_tovarlar_{dt.date.today():%Y-%m-%d}.xlsx"
+            n = await asyncio.to_thread(nazorat.write_vozvrat_tovarlar, str(p), rows, cfg)
+            if n:
+                with open(p, "rb") as f:
+                    await update.message.reply_document(f, filename=p.name, caption="↩️ Возвратдан берилган товарлар: " + ", ".join(
+                        f"{nazorat.qism_nom(q)} — {k} та" for q, k in n.items()))
+    except Exception:
+        log.exception("vozvrat tovarlar")
 
 
 async def fiks_matn(update: Update, ctx, text):
@@ -1390,6 +1419,20 @@ async def _document(update: Update, ctx):
             if oy_ and not (len(invs) > 5 or span > 3):  # ўтган ой фактураси — ўша ойга мос текширамиз, жорий ой ҳисобига қўшмаймиз
                 bk.unlink(missing_ok=True)
                 return _navbatga(update, path, name, None, "tek")
+            # дастурдан олинган кирим файли (Gavhar фактуралари аллақачон ботда) — реестрга иккинчи марта ҚЎШМАЙМИЗ, фақат солиштирамиз
+            try:
+                led_ = nazorat.load_ledger(str(LEDGER))
+                if ds and led_ and not any(str(r.get("faktura") or "").upper().startswith("GVR") for r in rows):
+                    kr_ = await asyncio.to_thread(nazorat.kirim_solishtir, [r for r in led_ if ds[0] <= (r.get("sana") or "") <= ds[-1]], rows)
+                    mos = len(rows) - len(kr_["dasturda"])
+                    if mos >= 0.5 * len(rows):
+                        bk.unlink(missing_ok=True)
+                        await update.message.reply_text(
+                            f"🔄 Бу дастурдаги КИРИМ файли кўринади: {mos} та товар ботдаги Gavhar фактураларида бор.\n"
+                            "Реестрга ҚЎШМАЙМАН (пул икки марта айирилмасин) — текшириб, нима қолиб кетганини топиб бераман.")
+                        return await handle_oylik_file(update, path)
+            except Exception:
+                log.exception("kirim aniqlash")
             eski = nazorat.eski_faktura(load_cfg(), rows)
             if eski:  # кундалик пуллардан олдинги сана — эски фактура: фақат текширамиз (бошқа эски файллар билан бирга)
                 bk.unlink(missing_ok=True)

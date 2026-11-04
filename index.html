@@ -255,7 +255,9 @@ async function loadHolat() {
       ${(() => { const ob = (d.royxat || []).find(x => x.tur === 'ob'); return ob ? `<div style="font-size:12px;margin-top:8px;padding:8px 10px;background:var(--bg);border-radius:10px">📌 ${E(L(ob.nom))}<div class="mut" style="font-size:12px;${/фарқ|farq/.test(ob.matn) ? '' : ''}">${E(L(ob.matn.replace(/^\S+\s/, '')))}</div></div>` : ''; })()}
       <div class="g2" style="margin-top:10px">
         <div><div class="lb">↩️ Vozvratda qolgan</div><div class="v grn">${usd(vzQoldi)}</div></div>
-        <div><div class="lb">Jami farq (xato)</div><div class="v ${d.farq > 0.5 ? 'red' : ''}">${sgn(d.farq, 0)} $</div></div>
+        <div onclick="navTo('xato')" style="cursor:pointer"><div class="lb">Narx xatolari ›</div>
+          <div style="font-size:14px;font-weight:700;margin-top:2px"><span class="red">+${fmt(d.qimmat || 0, 0)} $</span> <span class="mut" style="font-weight:400;font-size:12px">qimmat</span></div>
+          <div style="font-size:14px;font-weight:700"><span>${fmt(Math.abs(d.arzon || 0), 0)} $</span> <span class="mut" style="font-weight:400;font-size:12px">arzon</span></div></div>
       </div>
     </div>
     ${yq.length ? `<div class="card alert"><b style="font-size:14px">🔒 Yopilgan pullarda qolgan: ${usd(yq.reduce((s, x) => s + x.left, 0))}</b>
@@ -295,11 +297,11 @@ async function loadHolat() {
       <table style="margin-top:8px;font-size:12px"><tr><th>Tur</th><th>Summa qoldi</th><th>Gramm qoldi</th><th>$/gr</th></tr>
       ${f.turlar.map(t => `<tr><td>${E(L(t.tur))}</td><td>${usd(t.left)}<div class="mut">${usd(t.summa)} dan</div></td>
         <td>${t.gramm ? fmt(t.gramm - t.g, 2) + '<div class="mut">' + fmt(t.gramm, 2) + ' dan</div>' : '—'}</td>
-        <td>${t.fiks_1gr ? fmt(t.fiks_1gr, 2) : '—'}</td></tr>`).join('')}</table></div>`).join('');
+        <td>${t.fiks_1gr ? fmt(t.fiks_1gr, 2) : '—'}</td></tr>`).join('')}</table>${vzListBtn('Ф' + f.oy, f.n)}</div>`).join('');
     const qm = (d.qismlar || []).map(q => `<div class="card">
       <div class="rw"><b style="font-size:14px">↩️ Vozvrat ${q.no}-qism · birja ${q.birja}</b><span class="mut">${usd(q.summa)}</span></div>
       <div class="bar"><i style="width:${Math.max(1, Math.min(100, q.summa ? q.berilgan / q.summa * 100 : 0))}%"></i></div>
-      <div class="rw mut" style="font-size:12px"><span>berilgan ${usd(q.berilgan)} · ${fmt(q.n)} ta</span><span>${q.yopilgan ? 'Yakunlangan ' + dm(q.yopilgan) : 'qoldi ' + usd(q.qolgan)}</span></div></div>`).join('');
+      <div class="rw mut" style="font-size:12px"><span>berilgan ${usd(q.berilgan)} · ${fmt(q.n)} ta</span><span>${q.yopilgan ? 'Yakunlangan ' + dm(q.yopilgan) : 'qoldi ' + usd(q.qolgan)}</span></div>${vzListBtn(q.no, q.n)}</div>`).join('');
     const vzB = (fk || qm) ? fold('h_vz', "↩️ Vozvratlar", 'qoldi ' + usd(vzQoldi), qm + fk +
       `<div class="mut" style="font-size:12px;margin:0 4px">Tahrirlash, qo'shish, o'chirish — Transhlar bo'limida.</div>`, false) : '';
     /* 5. Umumiy ko'rsatkichlar */
@@ -541,7 +543,16 @@ async function xatoExcel(extra, btn) {
 let XR = [], XF = {k: 'all', filial: '', tur: '', q: ''};
 async function loadXato() {
   const el = $('#p-xato');
-  try { await ensureFO(); const d = await api('/api/xatolar' + qs()); XR = d.rows; renderXato(); } catch (e) { fail(el, e); }
+  try { await ensureFO(); const d = await api('/api/xatolar' + qs()); XR = d.rows; XT = d.turlar || []; renderXato(); } catch (e) { fail(el, e); }
+}
+let XT = [];
+function xtHtml() {
+  if (!XT.length) return '';
+  return fold('x_tur', "🔍 Xato turlari — Gavhar qaysi narxni qo'ygan", XT.length + ' xil', `<div class="card">
+    <table style="font-size:12px"><tr><th>Xato</th><th>Soni</th><th>Gramm</th><th>Farq</th></tr>
+    ${XT.map(x => `<tr style="cursor:pointer" onclick="XF.q='';XF.nima=${JSON.stringify(x.tur).replace(/"/g, '&quot;')};renderXato()"><td><b>${E(L(x.tur))}</b><div class="mut">${E(L(x.izoh || ''))}</div></td><td>${fmt(x.n)}</td><td>${fmt(x.gramm, 2)}</td>
+      <td class="${x.farq > 0 ? 'red' : ''}">${sgn(x.farq)} $</td></tr>`).join('')}</table>
+    <div class="mut" style="font-size:12px;margin-top:6px">Qatorni bossangiz — faqat shu xatolar ro'yxatda qoladi.${XF.nima ? ` <a href="#" onclick="event.preventDefault();XF.nima='';renderXato()">Hammasini ko'rsatish</a>` : ''}</div></div>`, true);
 }
 function renderXato() {
   const el = $('#p-xato');
@@ -556,6 +567,7 @@ function renderXato() {
       <select id="xt"><option value="">Barcha tur</option>${tur.map(f => `<option value="${esc(f)}" ${XF.tur === f ? 'selected' : ''}>${E(f)}</option>`).join('')}</select>
     </div>
     <input id="xq" placeholder="Tovar kodi, faktura № yoki do'kon" value="${esc(XF.q)}" style="margin-bottom:10px">
+    ${xtHtml()}
     <div class="rw" style="margin:0 4px 8px"><span id="xs" class="mut"></span>
       ${can('hisobot') ? `<button class="btn2" id="xexcel">📑 Excel</button>` : ''}</div>
     <div id="xl"></div>`;
@@ -571,7 +583,7 @@ function listXato() {
   const q = XF.q.trim().toLowerCase();
   const rs = XR.filter(r => (XF.k === 'all' || (XF.k === 'q' && r.holat.includes('ҚИММАТ')) || (XF.k === 'a' && r.holat.includes('арзон')) ||
       (XF.k === 'o' && !r.holat.includes('ҚИММАТ') && !r.holat.includes('арзон')))
-    && (!XF.filial || nk(r.filial).includes(nk(XF.filial))) && (!XF.tur || r.tur === XF.tur)
+    && (!XF.filial || nk(r.filial).includes(nk(XF.filial))) && (!XF.tur || r.tur === XF.tur) && (!XF.nima || r.xato_nima === XF.nima)
     && (!q || (r.kod + ' ' + r.faktura + ' ' + r.nomi).toLowerCase().includes(q) || nk(r.filial).includes(nk(q))));
   const sum = rs.reduce((s, r) => s + (r.farq || 0), 0);
   $('#xs').textContent = `${rs.length} pozitsiya · farq ${sgn(sum)} $`;
@@ -584,7 +596,8 @@ function listXato() {
       <div class="mut" style="font-size:12px">${E(r.faktura)} · art. ${E(r.kod)}</div>
       <div style="margin-top:8px;font-size:14px"><b>${E(L(r.kategoriya || '—'))}</b> · ${fmt(r.gramm, 2)} gr · <span class="mut">narxi: ${E(L(r.tur))}</span></div>
       <div style="margin-top:6px;display:inline-block;background:${cheap ? 'var(--amb-bg)' : 'var(--red-bg)'};color:${col};border-radius:8px;padding:4px 10px;font-size:13px;font-weight:600">
-        ❗ ${cheap ? 'Arzon' : 'Qimmat'}: ${E(xt || 'narx to\'g\'ri kelmadi')}</div>
+        ❗ ${cheap ? 'Arzon' : 'Qimmat'}: ${E(L(r.xato_nima || '') || xt || 'narx to\'g\'ri kelmadi')}</div>
+      ${r.xato_izoh ? `<div class="mut" style="font-size:12px;margin-top:4px">${E(L(r.xato_izoh))}</div>` : ''}
       <div class="g2" style="margin-top:10px">
         <div style="background:var(--bg);border-radius:10px;padding:8px 10px"><div class="lb">Fakturada</div><div style="font-size:17px;font-weight:700;color:${col}">${fmt(r.fakt_1gr, 2)} $/gr</div></div>
         <div style="background:var(--grn-bg);border-radius:10px;padding:8px 10px"><div class="lb">To'g'ri narx</div><div style="font-size:17px;font-weight:700;color:var(--grn)">${fmt(r.hisob_1gr, 2)} $/gr</div></div>
@@ -668,6 +681,7 @@ function vzHtml(d) {
       <div class="rw mut"><span>berilgan ${usd(q.used)} · ${fmt(q.n)} ta</span><span>qoldi ${usd(q.left)}</span></div>
       <table style="margin-top:10px"><tr><th>Tur</th><th>1 gr narxi</th></tr>
         ${Object.entries(q.narxlar || {}).map(([k, v]) => `<tr><td>${k === 'Вакс' ? "Vaks / ko'zsiz" : E(L(k))}</td><td><b>${fmt(v, 2)}</b></td></tr>`).join('')}</table>
+      ${vzListBtn(q.no, q.n)}
       ${btns(`vzEdit('${ek}')`, `vzDel(${q.no}, ${q.summa})`)}
       ${VZEDIT === ek ? `<div style="background:var(--bg);border-radius:12px;padding:10px 12px;margin-top:10px">
         <div class="g2"><div><label class="f">Sana</label><input type="date" id="vqe_s" value="${q.sana || ''}"></div>
@@ -687,6 +701,7 @@ function vzHtml(d) {
       <table style="margin-top:10px;font-size:12px"><tr><th>Tur</th><th>Summa</th><th>Gramm</th><th>$/gr</th><th>Qoldi</th></tr>
         ${f.turlar.map(t => `<tr><td>${E(L(t.tur))}</td><td>${usd(t.summa)}</td><td>${t.gramm ? fmt(t.gramm, 2) : '—'}</td><td>${t.narx ? fmt(t.narx, 2) : '—'}</td>
           <td>${usd(t.left)}${t.gramm ? '<div class="mut">' + fmt(t.gramm - (t.g || 0), 2) + ' gr</div>' : ''}</td></tr>`).join('')}</table>
+      ${vzListBtn('Ф' + f.oy, f.n)}
       ${btns(`vzEdit('${ek}')`, `fkDel('${f.oy}', '${E(L(f.nom))}')`)}
       ${VZEDIT === ek ? `<div style="background:var(--bg);border-radius:12px;padding:10px 12px;margin-top:10px">
         <div class="mut" style="font-size:12px">Har tur uchun summa va gramm. Summani bo'sh qoldirsangiz — o'sha tur o'chadi.</div>
@@ -711,6 +726,29 @@ function vzHtml(d) {
         <div class="g2">${TYPES.map(t => `<div><label class="f" style="margin-top:2px">${t === 'Вакс' ? "Vaks / ko'zsiz" : L(t)}</label><input class="vqp" data-t="${t}" inputmode="decimal"></div>`).join('')}</div>
         <button class="btn" style="margin-top:10px" onclick="vzNew()">Saqlash</button></div>` : ''}`;
 }
+/* возвратдан берилган товарлар рўйхати (очилганда юкланади) */
+function vzListBtn(q, n) {
+  const id = 'vzl_' + String(q).replace(/[^\w]/g, '');
+  return `<details style="margin-top:10px" ontoggle="if(this.open) vzList('${q}', '${id}')"><summary style="cursor:pointer;font-weight:600;font-size:13px">📋 Berilgan tovarlar${n != null ? ' · ' + fmt(n) + ' ta' : ''}</summary>
+    <div id="${id}" class="mut" style="font-size:12px;margin-top:6px">Yuklanmoqda…</div></details>`;
+}
+async function vzList(q, id) {
+  const el = document.getElementById(id); if (!el || el.dataset.ok) return;
+  try {
+    const d = await api('/api/vozvrat/tovarlar?q=' + encodeURIComponent(q));
+    el.dataset.ok = 1;
+    if (!d.n) { el.innerHTML = "Hali bu vozvratdan tovar berilmagan."; return; }
+    el.innerHTML = `<div style="color:var(--tx)"><b>${fmt(d.n)} ta · ${fmt(d.gramm, 2)} gr · ${usd(d.summa, 2)}</b></div>
+      <table style="margin-top:6px;font-size:12px"><tr><th>Tur</th><th>Soni</th><th>Gramm</th><th>Summa</th></tr>
+      ${d.turlar.map(t => `<tr><td>${E(L(t.tur))}</td><td>${fmt(t.n)}</td><td>${fmt(t.gramm, 2)}</td><td>${usd(t.summa, 2)}</td></tr>`).join('')}</table>
+      <table style="margin-top:8px;font-size:12px"><tr><th>Sana · filial</th><th>Tovar</th><th>Gr</th><th>$/gr</th><th>Summa</th></tr>
+      ${d.rows.slice(0, 300).map(r => `<tr><td>${dm(r.sana)}<div class="mut">${E(L(r.filial))}</div></td><td>${E(r.model || '')}<div class="mut">${E(L(r.tur))}</div></td>
+        <td>${fmt(r.gramm, 2)}</td><td>${fmt(r.narx, 2)}</td><td>${usd(r.summa, 2)}</td></tr>`).join('')}</table>
+      ${d.rows.length > 300 ? `<div class="mut" style="margin-top:4px">… yana ${d.rows.length - 300} ta — to'liq ro'yxat Excel'da</div>` : ''}
+      ${can('hisobot') ? `<button class="btn2" style="margin-top:8px" onclick="vzExcel()">📑 To'liq ro'yxat — Excel (chatga)</button>` : ''}`;
+  } catch (e) { el.textContent = e.message; }
+}
+async function vzExcel() { try { await api('/api/vozvrat/excel', {}); haptic('success'); toast('Excel chatga yuborildi'); } catch (e) { toast(e.message); } }
 function vzEdit(k) { VZEDIT = VZEDIT === k ? null : k; loadTransh(); }
 const ask = msg => new Promise(res => tg && tg.showConfirm && tg.initData ? tg.showConfirm(msg, res) : res(confirm(msg)));
 async function vzDo(url, body, okMsg) { try { await api(url, body); haptic('success'); toast(okMsg); VZEDIT = null; VZNEW = null; invalidate(); loadTransh(); } catch (e) { toast(e.message); } }
@@ -881,10 +919,14 @@ function sozlamaHtml() {
           f.left <= 1 ? `<span class="bd n">Tugagan</span>` : '')).join('')}
       <div class="mut" style="font-size:12px;margin-top:10px">➕ Vozvrat qo'shish, tahrirlash, o'chirish — <a href="#" onclick="event.preventDefault();show('transh')">Transhlar bo'limida</a>.</div>
     </div>`, false)
-    + fold('a_ser', '💍 Bilak uzuk va zanjir narxi', (SOZ.seriya_tosh || []).length ? (SOZ.seriya_tosh || []).length + ' ta istisno' : 'Braslet / Dorika', `<div class="card">
+    + fold('a_ser', '💍 Bilak uzuk va zanjir narxi', ((SOZ.seriya_tosh || []).length ? (SOZ.seriya_tosh || []).length + ' ta istisno' : 'Braslet / Dorika') + (Object.keys(SOZ.model_tur || {}).length ? ' · ' + Object.keys(SOZ.model_tur).length + ' model' : ''), `<div class="card">
       <div class="mut" style="font-size:12px;margin:4px 0 6px">Hozir: <b>hamma bilak uzuk — Braslet narxi, hamma zanjir — Dorika narxi</b> (vaks toshli QSG, ZSG ham). Faqat istisno kerak bo'lsa, seriyani yozing — u tosh narxida hisoblanadi.</div>
       <div class="rw" style="gap:8px"><input id="seriya" value="${esc((SOZ.seriya_tosh || []).join(', '))}" placeholder="istisno yo'q" style="flex:1">
         <button class="btn2" onclick="sozSeriya()">Saqlash</button></div>
+      <div class="sm" style="font-weight:600;margin-top:14px">Model bo'yicha narx turi</div>
+      <div class="mut" style="font-size:12px;margin:4px 0 6px">Shu modellar ko'rsatilgan narxda hisoblanadi (eng ustun qoida). Faqat raqam yozsangiz (<b>001491=Дорика</b>) — shu raqamli hamma zanjir va bilak uzuk; to'liq model (<b>ZSG001491=Дорика</b>) — faqat o'sha model.</div>
+      <textarea id="modeltur" rows="3" style="width:100%;font-size:13px">${esc(Object.entries(SOZ.model_tur || {}).map(([m, t]) => m + '=' + t).join(', '))}</textarea>
+      <button class="btn2" style="margin-top:6px" onclick="sozSeriya()">Saqlash</button>
     </div>`, false) + `
     ${qqsAdminHtml()}
     ${qoidalarHtml()}`;
@@ -1229,7 +1271,7 @@ async function qqsSave() {
   catch (e) { toast(e.message); }
 }
 async function sozSeriya() {
-  try { await api('/api/seriya', {seriya: $('#seriya').value}); haptic('success'); toast('Saqlandi — fakturalar qayta hisoblandi'); invalidate(); loadAdmin(ADM); }
+  try { await api('/api/seriya', {seriya: $('#seriya').value, model: ($('#modeltur') || {}).value || ''}); haptic('success'); toast('Saqlandi — fakturalar qayta hisoblandi'); invalidate(); loadAdmin(ADM); }
   catch (e) { toast(e.message); }
 }
 async function sozVqSave() {
