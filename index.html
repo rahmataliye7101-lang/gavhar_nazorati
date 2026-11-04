@@ -196,9 +196,8 @@ function royxatHtml(R) {
     <div style="padding:0 16px 12px">
     ${R.map(x => `<div style="padding:8px 0;border-top:1px solid var(--line);${x.kod === 'ochiq' ? '' : 'opacity:.8'}">
       <div class="rw"><b style="font-size:14px">${x.tur === 'pul' ? '💳' : x.tur === 'fiks' ? '📑' : '↩️'} ${E(L(x.nom))}</b><span class="bd ${cls[x.kod] || 'n'}">${ic[x.kod] || ''} ${lbl(x)}</span></div>
-      ${x.tafsil && x.tafsil.length ? `<div style="font-size:12px;margin-top:3px">${x.tafsil.map(t => `<div style="${/⚠/.test(t) ? 'color:var(--red)' : ''}">• ${E(L(t))}</div>`).join('')}</div>` : ''}
       ${x.gavhar ? `<div style="font-size:12px;margin-top:3px;${/⚠/.test(x.gavhar) ? 'color:var(--red)' : ''}">${E(x.gavhar)}</div>` : ''}
-      <div class="mut" style="font-size:12px;margin-top:2px">${E(x.matn.replace(/^\S+\s/, ''))}${x.used != null && x.left != null ? ` · ishlatildi ${usd(x.used)} · qoldi ${usd(x.left)}` : x.summa ? ` · ${usd(x.summa)}` : ''}</div>
+      <div class="mut" style="font-size:12px;margin-top:2px;${/⚠/.test(x.matn) ? 'color:var(--red)' : ''}">${E(L(x.matn.replace(/^\S+\s/, '')))}${x.used != null && x.left != null ? ` · ishlatildi ${usd(x.used)} · qoldi ${usd(x.left)}` : x.summa ? ` · ${usd(x.summa)}` : ''}</div>
     </div>`).join('')}
     <div class="mut" style="font-size:11px;margin-top:6px">🔒 Yopilgan/yakunlangan — shu sanadan keyingi fakturalarga ishlatilmaydi. ⏸ O'chirilgan — tekshiruvga umuman kirmaydi, undan ishlatilgan pul ham 0 ko'rinadi (Admin → Tekshiruv sozlamasi). Yakunlash uchun avval yoqing, keyin Holat → Vozvrat → «Vozvratni yakunlash».</div>
     </div></details>`;
@@ -228,6 +227,9 @@ async function loadHolat() {
       ${open.map(t => `<div class="bar"><i style="width:${Math.max(1, Math.min(100, t.pct))}%"></i></div>
         <div class="rw mut"><span>№${t.no} · ishlatilgan ${usd(t.used)}</span><span>${fmt(t.pct, 1)}%</span></div>`).join('')}
     </div>
+    ${(() => { const yq = (d.royxat || []).filter(x => x.tur === 'pul' && x.kod === 'yopiq' && (x.left || 0) > 1);
+      return yq.length ? `<div class="card alert"><b style="font-size:14px">🔒 Yopilgan pullarda qolgan: ${usd(yq.reduce((a, x) => a + x.left, 0))}</b>
+        <div class="mut" style="margin-top:4px">${yq.map(x => `${E(L(x.nom.split(' · birja')[0].split(' · биржа')[0]))} — ${usd(x.left)}`).join('<br>')}<br>Gavhar keyingi pul narxiga o'tgan — bu pul yuqoridagi qoldiqqa kirmaydi. Gavhar bilan solishtiring.</div></div>` : ''; })()}
     ${royxatHtml(d.royxat)}
     ${(d.yopiq_pullar || []).length && d.yetmadi && d.yetmadi.n ? `<div class="card alert">
       <b style="font-size:14px">⚠ Pul hisobga olinmayapti</b>
@@ -251,8 +253,18 @@ async function loadHolat() {
       <div class="card"><div class="lb">O'rtacha kunlik sarf</div><div class="v">${usd(d.temp)}</div></div>
       <div class="card"><div class="lb">Taxminiy tugash</div><div class="v">${dmy(d.tugash)}</div></div>
     </div>
+    ${(d.fiks || []).length ? `<div class="sec">Vozvrat · fiksatsiya bo'yicha (tosh turi: summa va gramm)</div>
+    ${d.fiks.map(f => `<div class="card">
+      <div class="rw"><b style="font-size:14px">📑 ${E(L(f.nom))}</b><span class="mut">${usd(f.summa)}</span></div>
+      <div class="bar" style="margin-top:8px"><i style="width:${Math.max(1, Math.min(100, f.summa ? f.used / f.summa * 100 : 0))}%"></i></div>
+      <div class="rw mut" style="font-size:12px"><span>berilgan ${usd(f.used)} · ${fmt(f.n)} ta</span><span>qoldi ${usd(f.left)}</span></div>
+      <table style="margin-top:8px;font-size:12px"><tr><th>Tur</th><th>Summa qoldi</th><th>Gramm qoldi</th><th>$/gr</th></tr>
+      ${f.turlar.map(t => `<tr><td>${E(L(t.tur))}</td><td>${usd(t.left)}<div class="mut">${usd(t.summa)} dan</div></td>
+        <td>${t.gramm ? fmt(t.gramm - t.g, 2) + '<div class="mut">' + fmt(t.gramm, 2) + ' dan</div>' : '—'}</td>
+        <td class="${t.ort && t.fiks_1gr && t.ort > t.fiks_1gr + 0.3 ? 'red' : ''}">${t.ort ? fmt(t.ort, 2) : '—'}<div class="mut">fiks. ${t.fiks_1gr ? fmt(t.fiks_1gr, 2) : '—'}</div></td></tr>`).join('')}</table>
+    </div>`).join('')}` : ''}
     ${(d.vozvrat && d.vozvrat.n) || (d.qismlar || []).length ? `<div class="sec">Vozvrat</div>
-    <div class="card">
+    ${d.vozvrat && d.vozvrat.n ? `<div class="card">
       <div class="mut" style="margin-bottom:8px">1-qism · ro'yxat bo'yicha</div>
       <div class="g2">
         <div><div class="lb">Do'konlar qaytargan</div><div class="v">${fmt(d.vozvrat.n)} ta</div><div class="mut">${usd(d.vozvrat.summa)}</div></div>
@@ -263,7 +275,7 @@ async function loadHolat() {
       ${can('transh_qoshish') ? `<div style="margin-top:10px">${d.vozvrat.yopilgan
         ? `<button class="btn2" onclick="vqYop(1, false)">Qayta ochish</button>`
         : `<button class="btn2" onclick="vqYop(1, true)">Vozvratni yakunlash</button> <span class="mut" style="font-size:12px">tugasa bosing</span>`}</div>` : ''}
-    </div>
+    </div>` : ''}
     ${(d.qismlar || []).map(q => `<div class="card">
       <div class="mut" style="margin-bottom:8px">${q.no}-qism · summa bo'yicha (birja ${q.birja} narxida)</div>
       <div class="g2">

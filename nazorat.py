@@ -654,6 +654,18 @@ def fiks_max_narx(cfg, tur_):
     return max(vs) if vs else None
 
 
+def fiks_narx_matn(cfg, tur_):
+    """Фиксациядаги шу тур 1 гр нархлари: «сентябр 2026 — 95.30, октябр 2026 — 90.50»."""
+    out = []
+    for f in fiks_list(cfg):
+        for c in FIKS_MAP.get(tur_, [tur_]):
+            x = f["turlar"].get(c)
+            if x and x.get("gramm"):
+                out.append(f"{oy_nom(f['oy'])} — {x['summa'] / x['gramm']:.2f} $/гр")
+                break
+    return ", ".join(out) or "бу тур йўқ"
+
+
 def fiks_try(cfg, r, g, s, chegara):
     """Пул нархига тушмаган товарни возврат фиксациясидан ёпиш. True — ёпилди; ("narx", max) — нарх жуда баланд; None — йўқ."""
     sana = r.get("sana") or ""
@@ -661,9 +673,11 @@ def fiks_try(cfg, r, g, s, chegara):
     for f in fiks_list(cfg):
         if f.get("faol") is False or (sana and sana[:7] < f["oy"]):
             continue
+        # фиксацияда грамм бор бўлса — возврат 1 гр нархи = сумма ÷ грамм; товар шу нархда бўлиши шарт (±чегара)
         x = next((f["turlar"][c] for c in FIKS_MAP.get(r["tur"], [r["tur"]])
                   if c in f["turlar"] and f["turlar"][c]["summa"] - f["turlar"][c].get("_used", 0.0) >= s - 1
-                  and (not f["turlar"][c].get("gramm") or f["turlar"][c]["gramm"] - f["turlar"][c].get("_g", 0.0) >= g - 0.01)), None)
+                  and (not f["turlar"][c].get("gramm") or (f["turlar"][c]["gramm"] - f["turlar"][c].get("_g", 0.0) >= g - 0.01
+                                                          and abs(f1 - f["turlar"][c]["summa"] / f["turlar"][c]["gramm"]) <= chegara))), None)
         if not x:
             continue
         mx = fiks_max_narx(cfg, r["tur"])
@@ -825,6 +839,9 @@ def holat_royxat(cfg, trs, v1=None, rows=None):
             k, m = "eski", "📅 Фақат эски приход текшируви учун"
         elif t.get("yopilgan_sana"):
             k, m = "yopiq", f"🔒 Ёпилган {_dmy(t['yopilgan_sana'])} — кейинги фактураларга ишлатилмайди"
+        elif t.get("_avto_yop"):
+            k, m = "yopiq", (f"🔒 Gavhar ёпган — {_dmy(t['_avto_yop'])} дан кейин №{t.get('_avto_keyingi')} нархига ўтган, бизда ҳам ёпилди"
+                             + (f". ⚠ Шу пулда {left:,.0f} $ қолган — Gavhar билан солиштиринг" if left and left > 1 else ""))
         elif left is not None and left <= 1:
             k, m = "tugagan", "✅ Тугаган"
         else:
@@ -835,7 +852,7 @@ def holat_royxat(cfg, trs, v1=None, rows=None):
             gm = f"🏭 Gavhar шу пул нархида: {_dmy(g['birinchi'])} – {_dmy(g['oxirgi'])}, {g['n']} та товар"
             if g["yopdi"]:
                 gm += f" → {_dmy(g['oxirgi'])} да ёпиб, №{g['keyingi']} нархига ўтган"
-                if left is not None and left > max(1000, 0.01 * t["summa_usd"]) and k not in ("tugagan",):
+                if left is not None and left > max(1000, 0.01 * t["summa_usd"]) and k not in ("tugagan",) and not t.get("_avto_yop"):
                     gm += f". ⚠ Бизнинг ҳисобда шу пулда {left:,.0f} $ қолган эди — Gavhar билан солиштиринг"
             elif k == "tugagan":
                 gm += ". ⚠ Бизда пул тугаган, Gavhar ҳали шу нархда ёзяпти"
@@ -867,6 +884,7 @@ def holat_royxat(cfg, trs, v1=None, rows=None):
             k, m = "ochiq", "🟢 Очиқ — ишлатиляпти" if q["berilgan"] > 0 else "🟢 Очиқ — навбатда"
         out.append(dict(tur="vozvrat", no=q["no"], sana=q.get("sana"), nom=f"Возврат {q['no']}-қисм · сумма · биржа {q['birja']}",
                         summa=q["summa"], used=q["berilgan"], left=q["qolgan"], kod=k, matn=m))
+    out = [x for x in out if not (x["tur"] == "vozvrat" and x["kod"] == "off")]  # ўчирилган эски возвратлар кўрсатилмайди
     for f in fiks_stats(cfg):
         if not f["faol"]:
             k, m = "off", "⏸ Ўчирилган — текширувга кирмайди"
@@ -878,6 +896,54 @@ def holat_royxat(cfg, trs, v1=None, rows=None):
                         summa=f["summa"], used=f["used"], left=f["left"], kod=k, matn=m,
                         tafsil=fiks_tafsil(f, cfg.get("chegara_usd_gr", 0.3))))
     return out
+
+
+def manba_qatorlar(rs, tmap, cfg):
+    """Фактура товарлари қайси пул ва қайси возврат бўйича текширилди: ҳар манба — битта қатор (сони, сумма, тўғри/хато)."""
+    g = OrderedDict()
+    for r in rs:
+        if r.get("transh") == "возврат":
+            qn = r.get("vozvrat_qism") or 1
+            if isinstance(qn, str):
+                k = (1, qn, f"↩️ Возврат {qism_nom(qn)} (тош тури 1 гр нархи)")
+            elif qn == 1:
+                k = (1, "1", "↩️ Возврат 1-қисм (рўйхат)")
+            else:
+                q0 = next((q for q in cfg.get("vozvrat_qismlar", []) if q["no"] == qn), {})
+                k = (1, str(qn), f"↩️ Возврат {qn}-қисм (биржа {q0.get('birja')} нархи)")
+        else:
+            ns = list(dict.fromkeys(int(x) for x in re.findall(r"№(\d+)", str(r.get("transh") or ""))))
+            if ns:
+                k = (0, "+".join(map(str, ns)), " + ".join(f"💳 №{n} пул ({_dmy(tmap[n]['sana'])}, биржа {tmap[n].get('birja_999')})" if n in tmap else f"№{n}" for n in ns))
+            else:
+                k = (2, "", "❓ пулга боғланмади")
+        x = g.setdefault(k, [0, 0.0, 0, 0.0])
+        x[0] += 1; x[1] += r["summa"] or 0
+        if str(r.get("holat", "")).startswith("⚠"):
+            x[2] += 1; x[3] += r.get("farq") or 0
+    out = []
+    for (_, _, nom), (n, sm, nb_, fq) in sorted(g.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        out.append(f"   {nom}: {n} та · {sm:,.2f} $ — " + ("✅ тўғри" if not nb_ else f"❌ {nb_} та хато ({fq:+,.2f} $)"))
+    return out
+
+
+def holat_qisqa(items):
+    """Фактура жавоби учун қисқа ҳолат: ҳар пул/возврат — битта қатор. Тўлиқи — /holat."""
+    L = []
+    for x in items:
+        if x["kod"] in ("off", "eski"):
+            continue
+        nom = re.sub(r"^Пул ", "", x["nom"].split(" · биржа")[0])
+        if x["tur"] == "pul":
+            if x["kod"] == "ochiq":
+                L.append(f"🟢 {nom} — қолди {x['left'] or 0:,.0f} $")
+            elif x["kod"] == "tugagan":
+                L.append(f"✅ {nom} — тугаган")
+            else:
+                L.append(f"🔒 {nom} — ёпилган" + (f", ⚠ {x['left']:,.0f} $ қолган (Gavhar билан солиштиринг)" if (x.get("left") or 0) > 1 else ""))
+        elif x["kod"] == "ochiq":
+            L.append(f"{'📑' if x['tur'] == 'fiks' else '↩️'} {nom} — қолди {x['left'] or 0:,.0f} $")
+    return L
 
 
 def holat_royxat_matn(items):
@@ -955,6 +1021,26 @@ def tur(nomi, kat):
 
 # ---------------- асосий ҳисоб ----------------
 def compute(cfg, ledger, returns=None):
+    """Ҳисоб. Gavhar пулни ўзи «ёпиб» кейинги пул нархига ўтган бўлса (фактура нархидан аниқланади) —
+    бизда ҳам шу пул Gavhar охирги шу нархда ёзган кундан кейин ёпилган ҳисобланади (қолган пули солиштириш учун кўрсатилади)."""
+    for t in cfg.get("transhlar", []):
+        t.pop("_avto_yop", None)
+    rows, trs = _compute(cfg, ledger, returns)
+    if cfg.get("avto_yopish", True):
+        gp = gavhar_pullar(rows, cfg)
+        n = 0
+        for t in cfg.get("transhlar", []):
+            g = gp.get(t["no"])
+            if g and g["yopdi"] and not t.get("yopilgan_sana") and t.get("faol", True) and not t.get("faqat_tekshiruv"):
+                t["_avto_yop"] = g["oxirgi"]
+                t["_avto_keyingi"] = g["keyingi"]
+                n += 1
+        if n:
+            rows, trs = _compute(cfg, ledger, returns)
+    return rows, trs
+
+
+def _compute(cfg, ledger, returns=None):
     seriya_sozla(cfg)
     returns = returns or []
     for ret in returns:
@@ -1012,6 +1098,9 @@ def compute(cfg, ledger, returns=None):
                     if i >= yq:
                         continue
                 elif ys and r["sana"] and r["sana"] >= ys:  # эски усул: шу санадан ёпилган
+                    continue
+                av = t.get("_avto_yop")
+                if av and r["sana"] and r["sana"] > av:  # Gavhar бу пулни ёпиб, кейинги пул нархига ўтган
                     continue
                 p = t["narxlar"].get(r["tur"]) or t["narxlar"].get("Детский" if r["tur"].startswith("❓") else "Дорика")
                 take = min(rem_g, lf[ti] / p)
@@ -1076,6 +1165,13 @@ def compute(cfg, ledger, returns=None):
                     break
             if done:
                 continue
+            for q in vq:  # ўчирилган возврат қисми нархига мос бўлса — шуни айтамиз
+                pq0 = q["narxlar"].get(r["tur"]) or q["narxlar"].get("Дорика")
+                if q.get("faol") is False and pq0 and abs(s / g - pq0) <= chegara:
+                    r["_pool_hint"] = (f"Бу нарх ({s / g:.2f} $/гр) — возврат {q['no']}-қисм (биржа {q['birja']}) нархи, лекин {q['no']}-қисм "
+                                       f"ТЎХТАТИЛГАН (возврат фақат фиксация бўйича: {fiks_narx_matn(cfg, r['tur'])}). "
+                                       f"Янги товар бўлса — {cost / g:.2f} $ (пул нархи).")
+                    break
             for q in vq:
                 if q_yopiq(q, i, r) or q.get("faol") is False:
                     continue
@@ -1157,10 +1253,15 @@ def compute(cfg, ledger, returns=None):
             holat = "Тугаган"
         elif t.get("yopilgan_sana"):
             holat = f"Ёпилган {_dmy(t['yopilgan_sana'])}"
+        elif t.get("_avto_yop"):
+            holat = f"Gavhar ёпган {_dmy(t['_avto_yop'])}"
         else:
             holat = "Фаол" if used[ti] > 0 else "Ишлатилмаган"
         trs.append(dict(no=t["no"], sana=t["sana"], summa=t["summa_usd"], birja=t["birja_999"],
                         used=used[ti], left=left[ti], holat=holat, birinchi=first_date[ti], oxirgi=last_date[ti]))
+    for r in out:  # возврат товар пулдан айирилмайди — «пул етмади» белгиси унга тегишли эмас
+        if r.get("transh") == "возврат":
+            r.pop("pul_yetmadi", None)
     return belgila(out, cfg), trs
 
 
@@ -1476,7 +1577,7 @@ def stats(rows, trs):
     qimmat = sum(r["farq"] for r in ok if r["holat"].startswith("⚠ ҚИММАТ"))
     arzon = sum(r["farq"] for r in ok if r["holat"].startswith("⚠ арзон"))
     active = next((t for t in trs if t["holat"] == "Фаол"), None) or next((t for t in trs if t["holat"] == "Ишлатилмаган"), None)
-    left_total = sum(t["left"] for t in trs if not str(t["holat"]).startswith("Ёпилган"))
+    left_total = sum(t["left"] for t in trs if not str(t["holat"]).startswith(("Ёпилган", "Gavhar ёпган")))
     # темп: охирги 30 кун
     by_day = defaultdict(float)
     for r in ok:
@@ -1870,6 +1971,10 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
         except Exception as e:
             L.append(f"   (Excel ёзилмади: {e})")
     elif new_res:
+        if len(inv) > 1:  # бир нечта фактура — тепада битта умумий қатор
+            nb_all = [k for k, rs in inv.items() if any(r["holat"].startswith("⚠") for r in rs)]
+            L.append(f"📥 {len(inv)} та фактура · {len(new_res)} та товар · {sum(r['summa'] or 0 for r in new_res):,.2f} $ — "
+                     + ("ҳаммаси ✅ тўғри" if not nb_all else f"✅ {len(inv) - len(nb_all)} та тўғри, ❌ {len(nb_all)} тасида хато"))
         for (fno, fil, sana), rs in inv.items():
             nb = [r for r in rs if r["holat"].startswith("⚠")]
             rv = [r for r in rs if r.get("transh") == "возврат"]
@@ -1881,9 +1986,19 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
             tmap = {t["no"]: t for t in cfg["transhlar"]}
             tnos = sorted({int(x) for r in rs for x in re.findall(r"№(\d+)", str(r.get("transh") or ""))})
             tline = " + ".join(f"Транш №{n} ({_dmy(tmap[n]['sana'])}, биржа {tmap[n].get('birja_999')})" for n in tnos if n in tmap)
+            if not nb:  # тўғри фактура — сарлавҳа + ҳар манба (пул / возврат) бўйича битта қатор
+                L.append(f"✅ {fno or '—'} · {fil or '—'} · {sana_t} · {len(rs)} та · {fakt:,.2f} $")
+                L += manba_qatorlar(rs, tmap, cfg)
+                try:
+                    safe = re.sub(r"[^\w\-]+", "_", f"{fno}_{fil}").strip("_")[:60] or "faktura"
+                    write_invoice_report(str(Path(out_path).with_name(f"Faktura_{safe}.xlsx")), fno, fil, sana_t, rs, trn, tmap)
+                except Exception:
+                    pass
+                continue
             L.append("━━━━━━━━━━━━━━━")
             L.append(f"🧾 {fno or '—'} · {fil or '—'} · {sana_t}")
             L.append(f"   {len(rs)} та товар · {sum(r['gramm'] for r in rs):,.2f} гр")
+            L += manba_qatorlar(rs, tmap, cfg)
             L.append("Текширув:")
             L += faktura_xulosa(rs, tmap)
             if rv:
@@ -1968,12 +2083,12 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
         for q in qism_stats(cfg):
             if q_old.get(q["no"], 0) > 100 and q["qolgan"] <= 100:
                 L.append(f"🔔 Возврат {q['no']}-қисм ({q['summa']:,.0f} $) тугади. Якунлаш: /vozvrat_yop {q['no']}")
-        L.append(f"💰 Gavhar да жами қолдиқ (очиқ пуллар): {s['left']:,.0f} $")
-        L += holat_royxat_matn(holat_royxat(cfg, trs, returns_stats(returns) if returns else None, rows))
+        L.append(f"💰 Очиқ пуллар қолдиғи: {s['left']:,.0f} $")
+        L += holat_qisqa(holat_royxat(cfg, trs, returns_stats(returns) if returns else None, rows))
         og = pul_ogoh(new_res, cfg)
         if og:
-            L += [""] + og
-        L.append("Батафсил: Excel файл ёки «Назорат» mini app.")
+            L += [""] + og[:3]
+        L.append("Батафсил: /holat · /fiks · Excel · mini app")
         return "\n".join(L)
     s["qismlar"] = qism_stats(cfg)
     s["royxat"] = holat_royxat(cfg, trs, returns_stats(returns) if returns else None, rows)

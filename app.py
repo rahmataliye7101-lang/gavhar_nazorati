@@ -90,9 +90,11 @@ def state():
     rets = N.load_returns(str(B.VOZVRAT))
     rows, trs = N.compute(cfg, N.load_ledger(str(B.LEDGER)), rets)
     st = N.stats(rows, trs)
-    st["vozvrat"] = N.returns_stats(rets)
-    st["qismlar"] = N.qism_stats(cfg)
+    # ⏸ ўчирилган эски возвратлар (Excel рўйхат, 2-қисм) Holat да кўрсатилмайди — ҳозир возврат ой фиксацияси бўйича
+    st["vozvrat"] = N.returns_stats(rets) if (cfg.get("vozvrat_1") or {}).get("faol", True) else dict(n=0)
+    st["qismlar"] = [q for q in N.qism_stats(cfg) if q.get("faol") is not False]
     st["vozvrat"]["yopilgan"] = (cfg.get("vozvrat_1") or {}).get("yopilgan_sana")
+    st["fiks"] = [f for f in N.fiks_stats(cfg) if f["faol"]]
     return cfg, rows, trs, st
 
 
@@ -240,6 +242,7 @@ async def api_holat(request):
     s = N.stats(rows, trs)
     s["vozvrat"] = s_all["vozvrat"]
     s["qismlar"] = s_all.get("qismlar", [])
+    s["fiks"] = s_all.get("fiks", [])
     inv = invoices(rows, cfg)
     ok = s["ok"]
     davr = None
@@ -284,6 +287,8 @@ async def api_holat(request):
         faktura_soni=len(inv), oxirgi=inv[0] if inv else None,
         vozvrat={k: r2(v) if isinstance(v, float) else v for k, v in s["vozvrat"].items()},
         qismlar=[{k: (r2(v) if isinstance(v, float) else v) for k, v in q.items() if k != "narxlar"} for q in s.get("qismlar", [])],
+        fiks=[dict(oy=f["oy"], nom=f["nom"], summa=r2(f["summa"]), used=r2(f["used"]), left=r2(f["left"]), n=f["n"],
+                   turlar=[{k: (r2(v) if isinstance(v, float) else v) for k, v in t.items()} for t in f["turlar"]]) for f in s.get("fiks", [])],
         oy_pul=oy_pul_json(rows_all, cfg, oy),
         royxat=[{k: (r2(v) if isinstance(v, float) else v) for k, v in x.items()}
                 for x in N.holat_royxat(cfg, trs_all, s_all.get("vozvrat"), rows_all)],
