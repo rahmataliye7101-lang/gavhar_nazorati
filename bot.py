@@ -33,6 +33,7 @@ TRANSH = DATA / "transhlar.json"
 LEDGER = DATA / "ledger.csv"
 VOZVRAT = DATA / "vozvrat.csv"
 BACKUP = DATA / "backup"
+ARXIV = DATA / "fakturalar"  # ботга ташланган ҳар бир фактура файли — кейин қайта текшириш (/qayta) учун
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or (
     f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}" if os.environ.get("RAILWAY_PUBLIC_DOMAIN") else "")
 ALLOWED = {int(x) for x in re.findall(r"\d+", os.environ.get("ALLOWED_USERS", ""))}
@@ -1105,6 +1106,12 @@ async def handle_oylik_file(update: Update, path, qoshish_tugma=False):
                 d0 = min(p["sana"] for p in prog if p.get("sana")); d1 = max(p["sana"] for p in prog if p.get("sana"))
                 kr = await asyncio.to_thread(nazorat.kirim_solishtir, [r for r in ledger if d0 <= (r.get("sana") or "") <= d1], prog)
                 text += "\n" + "\n".join(nazorat.kirim_matn(kr))
+                if qoshish_tugma and len(prog) - len(kr["dasturda"]) >= 0.5 * len(prog):
+                    # бу дастур КИРИМ файли — товарлари ботда Gavhar фактураси сифатида бор: реестрга қўшиш = пулни ИККИ МАРТА айириш
+                    qoshish_tugma = False
+                    text += ("\n\n🔒 «Реестрга қўшиш» тугмаси йўқ: бу дастурдаги кирим файли, товарларнинг кўпи ботда Gavhar фактураси "
+                             "сифатида бор — қўшилса пулдан икки марта айирилади. Ботда йўқ фактураларни (📥 рўйхат) Gavhar'нинг ўз "
+                             "фактурасини олиб, алоҳида ташланг.")
                 kirim_xl = Path(td) / f"Kirim_solishtirish_{dt.date.today():%Y-%m-%d}.xlsx"
                 await asyncio.to_thread(nazorat.write_kirim_report, str(kirim_xl), kr)
         except Exception:
@@ -1216,6 +1223,23 @@ async def reestr(update: Update, ctx):
         await update.message.reply_document(f, filename="gavhar_reestr.csv")
 
 
+@need("hisobot")
+async def hammasi_cmd(update: Update, ctx):
+    """Ботдаги ҳамма маълумот битта zip да: реестр, пуллар/возвратлар (transhlar.json), возврат рўйхати, фактуралар архиви."""
+    import zipfile
+    with tempfile.TemporaryDirectory() as td:
+        z = Path(td) / f"gavhar_bot_malumot_{dt.datetime.now():%Y-%m-%d_%H%M}.zip"
+        with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in (LEDGER, TRANSH, VOZVRAT):
+                if p.exists():
+                    zf.write(p, p.name)
+            if ARXIV.exists():
+                for p in sorted(ARXIV.glob("*")):
+                    zf.write(p, f"fakturalar/{p.name}")
+        with open(z, "rb") as f:
+            await update.message.reply_document(f, filename=z.name, caption="📦 Ботдаги ҳамма маълумот: реестр, пуллар ва возвратлар, фактуралар архиви")
+
+
 RET_WORDS = ("возврат", "возрат", "vozvrat", "qaytar", "қайтар", "кайтар")
 
 
@@ -1300,6 +1324,35 @@ async def fiks_matn(update: Update, ctx, text):
     await update.message.reply_text("✅ Возврат фиксацияси сақланди:\n" + "\n".join(L) + "\n\nЖами жадвал суммаси Gavhar жадвалидаги «Жами» билан бир хилми — текширинг.")
     await send_long(update.message, fiks_holat_matn())
     return True
+
+
+@need("faktura_yuklash")
+async def qayta_cmd(update: Update, ctx):
+    """Архивдаги ҳамма Gavhar фактураларини қайта ўқиб, реестрда тушиб қолган товарларни қўшади (такрорлар қўшилмайди)."""
+    fs = sorted(str(p) for p in ARXIV.glob("*.xls*")) if ARXIV.exists() else []
+    if not fs:
+        await update.message.reply_text("📂 Архивда фактура йўқ. Архив янги коддан кейин ташланган фактуралардан йиғилади.\n"
+                                        "Олдинги фактураларни қайта текшириш учун уларни ботга қайта ташланг — такрорлар қўшилмайди, фақат тушиб қолганлари қўшилади.")
+        return
+    def gavhar_fayl(p):  # фақат Gavhar'нинг ўз фактураси (GVR-…); дастур кирими файллари қўшилмайди
+        try:
+            return any(str(r.get("faktura") or "").upper().startswith("GVR") for r in nazorat.read_invoice(p, []))
+        except Exception:
+            return False
+    fs = [p for p in fs if await asyncio.to_thread(gavhar_fayl, p)]
+    if not fs:
+        await update.message.reply_text("📂 Архивда Gavhar фактураси (GVR-…) йўқ.")
+        return
+    await update.message.reply_text(f"🔄 Архивдаги {len(fs)} та Gavhar фактураси қайта текширилмоқда — фақат реестрда йўқ товарлар қўшилади…")
+    async with LOCK:
+        backup(LEDGER)
+        n0 = len(nazorat.load_ledger(str(LEDGER)))
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "Gavhar_nazorat.xlsx"
+            await asyncio.to_thread(nazorat.run, str(TRANSH), str(LEDGER), str(out), fs, str(VOZVRAT))
+        n1 = len(nazorat.load_ledger(str(LEDGER)))
+    await update.message.reply_text(f"✅ Тайёр: {n1 - n0} та тушиб қолган товар реестрга қўшилди." if n1 > n0
+                                    else "✅ Тайёр: ҳамма товар реестрда бор, тушиб қолгани йўқ.")
 
 
 @need("vozvrat_yuklash")
@@ -1492,6 +1545,14 @@ def _navbatga(update, path, name, bk, mode):
         bk.unlink(missing_ok=True)  # реестр ҳали ўзгармаган — биринчи нусха етарли
     dst = Path(b["dir"]) / f"{len(b['files']):03d}_{name}"
     shutil.copy(path, dst)
+    try:  # фактура архиви (такрор файл сақланмайди)
+        import hashlib
+        ARXIV.mkdir(parents=True, exist_ok=True)
+        h = hashlib.md5(Path(path).read_bytes()).hexdigest()[:10]
+        if not any(ARXIV.glob(f"*_{h}_*")):
+            shutil.copy(path, ARXIV / f"{dt.datetime.now():%Y%m%d_%H%M%S}_{h}_{Path(name).name}")
+    except Exception:
+        log.exception("arxiv")
     b["files"].append(str(dst))
     b["update"] = update
     if b["task"]:

@@ -424,8 +424,10 @@ def save_ledger(path, rows):
 
 
 def key(r):
+    """Такрор юклашни аниқлаш калити. Артикул (GV…) битта товарники — у возвратдан кейин БОШҚА фактурада қайта
+    берилиши мумкин, шунинг учун фактура ва дўкон ҳам калитга киради (05.11.2026: Бахмал мини USD002046 тушиб қолган эди)."""
     if r.get("id"):
-        return ("id", str(r["id"]))
+        return ("id", str(r["id"]), str(r.get("faktura") or ""), str(r.get("filial") or ""))
     return ("x", r.get("faktura"), r.get("kod"), str(r.get("gramm")), str(r.get("summa")))
 
 
@@ -2104,8 +2106,9 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
     cfg = json.load(open(transh_path, encoding="utf-8"))
     ledger = load_ledger(ledger_path)
     seen = {key(r) for r in ledger}
+    oldin_id = {str(r["id"]): r for r in ledger if r.get("id")}
     added, dup, new_rows = 0, 0, []
-    warns, file_keys = [], set()
+    warns, file_keys, qayta = [], set(), []
     skip_reset()
     for f in files:
         for r in read_invoice(f, warns):
@@ -2115,6 +2118,9 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
                 dup += 1
                 continue
             seen.add(k)
+            o = oldin_id.get(str(r.get("id") or ""))
+            if o:  # шу артикул олдин бошқа фактурада берилган — возвратдан кейин қайта берилган товар
+                qayta.append((r, o))
             ledger.append(r)
             new_rows.append(r)
             added += 1
@@ -2134,6 +2140,10 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
         L.append("ℹ️ Бу фактура олдин юкланган — реестрга қайта қўшилмади (пул икки марта айирилмайди). Текширув натижаси:")
     elif files and dup:
         L.append(f"ℹ️ {dup} та товар олдин юкланган — улар қайта қўшилмади. Ҳаммасининг текшируви:")
+    if qayta:
+        L.append(f"↩️ {len(qayta)} та товар артикули олдин бошқа фактурада бўлган (возвратдан кейин қайта берилган) — реестрга қўшилди: "
+                 + "; ".join(f"{model_of(r['nomi']) or r['kod']} ({o.get('filial')} {_dmy(o.get('sana'))} → {r.get('filial')})" for r, o in qayta[:5])
+                 + (" …" if len(qayta) > 5 else ""))
     if new_res and not cfg["transhlar"]:
         L.append(f"🧾 Янги фактура: {len(new_res)} позиция, {sum(r['gramm'] for r in new_res):,.2f} гр, "
                  f"{sum((r['summa'] or 0) for r in new_res):,.2f} $ — реестрга қўшилди.\n"

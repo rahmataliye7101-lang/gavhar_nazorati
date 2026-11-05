@@ -1229,6 +1229,8 @@ def make_bot():
     app.add_handler(CallbackQueryHandler(B.admin_cb, pattern="^ad_"))
     app.add_handler(CommandHandler("vozvrat", B.vozvrat))
     app.add_handler(CommandHandler(["fiks", "fiksatsiya"], B.fiks_cmd))
+    app.add_handler(CommandHandler(["qayta", "qayta_tekshir"], B.qayta_cmd))
+    app.add_handler(CommandHandler(["hammasi", "export"], B.hammasi_cmd))
     app.add_handler(CommandHandler("xatolar", B.xatolar_cmd))
     app.add_handler(CommandHandler("vozvrat_yop", B.vozvrat_yop))
     app.add_handler(CommandHandler("vozvrat_och", B.vozvrat_och))

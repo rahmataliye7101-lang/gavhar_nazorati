@@ -504,9 +504,12 @@ function invCard(a) {
     <div class="rw" style="margin-top:6px"><span class="amt">${usd(a.fakt, 2)}</span>${farqBadge(a.farq, a.bad)}</div>
     <div class="trl">${(a.trs || []).length ? '💳 ' + a.trs.map(t => `Transh №${t.no} · ${dm(t.sana)} · birja ${t.birja}`).join(' + ') + ' narxida tekshirildi' : (a.vozvrat === a.n ? '↩ Hammasi vozvrat' : '⚠ Transhga tushmagan')}${a.vozvrat ? ` · ↩ ${a.vozvrat} ta vozvrat: ` + [...new Set((a.vlist || []).map(v => v.qism))].map(qNom).join(', ') : ''}</div>
     ${open ? `<div class="det">
-      <table><tr><th>Tur</th><th>Gr</th><th>Faktura</th><th>Kerak</th><th>Farq</th></tr>
-      ${a.turlar.map(t => `<tr><td>${E(t.tur)} <span class="mut">×${t.n}</span></td><td>${fmt(t.gramm, 2)}</td><td>${fmt(t.fakt_1gr, 2)}</td><td>${fmt(t.hisob_1gr, 2)}</td>
-        <td class="${t.bad && t.farq > 0 ? 'red' : t.bad ? '' : 'mut'}">${t.bad ? sgn(t.farq) : '—'}</td></tr>`).join('')}</table>
+      <table style="font-size:13px"><tr><th>Tur</th><th>Gr</th><th>$/gr<div class="mut" style="font-weight:400">faktura · kerak</div></th><th>Summa $</th><th>Farq</th></tr>
+      ${a.turlar.map(t => `<tr><td>${E(L(t.tur))} <span class="mut">×${t.n}</span></td><td>${fmt(t.gramm, 2)}</td>
+        <td>${fmt(t.fakt_1gr, 2)}<div class="mut">${fmt(t.hisob_1gr, 2)}</div></td><td><b>${fmt(t.fakt, 2)}</b></td>
+        <td class="${t.bad && t.farq > 0 ? 'red' : t.bad ? '' : 'mut'}">${t.bad ? sgn(t.farq) : '—'}</td></tr>`).join('')}
+      <tr><td><b>Jami</b></td><td><b>${fmt(a.gramm, 2)}</b></td><td></td><td><b>${fmt(a.fakt, 2)}</b></td><td class="${a.farq > 0.5 ? 'red' : 'mut'}">${Math.abs(a.farq) > 0.005 ? sgn(a.farq) : '—'}</td></tr></table>
+      <div class="mut" style="font-size:11px;margin-top:4px">Summa = gramm × faktura $/gr (har tovar alohida yaxlitlangan).</div>
       ${(a.xulosa || []).length ? `<div class="sec" style="margin:12px 0 6px">Tekshiruv</div>
         ${a.xulosa.map(x => `<div style="font-size:13px;margin-top:4px">${E(L(x))}</div>`).join('')}` : ''}
       ${(a.vlist || []).length ? `<div class="sec" style="margin:12px 0 6px">↩ Vozvrat bilan to'g'rilangan · ${a.vlist.length} ta</div>
