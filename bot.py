@@ -110,6 +110,20 @@ def ensure_data():
             shutil.copy(src, LEDGER)
         else:
             nazorat.save_ledger(str(LEDGER), [])
+    # бир марталик (04.11.2026): бошқа таъминотчи (Diamonds, DG-…) фактураси реестрда қолиб кетган — ўчирилади (нусха backup да)
+    flag = DATA / "dg_tozalandi.txt"
+    if not flag.exists():
+        try:
+            led = nazorat.load_ledger(str(LEDGER))
+            keep = [r for r in led if not str(r.get("faktura") or "").strip().upper().startswith("DG-")]
+            if len(keep) != len(led):
+                BACKUP.mkdir(parents=True, exist_ok=True)
+                shutil.copy(LEDGER, BACKUP / f"ledger_dg_oldin_{dt.datetime.now():%Y%m%d_%H%M%S}.csv")
+                nazorat.save_ledger(str(LEDGER), keep)
+            flag.write_text(f"{dt.datetime.now():%Y-%m-%d %H:%M} — DG- фактуралар ўчирилди: {len(led) - len(keep)} та қатор\n", encoding="utf-8")
+            log.info("DG- (бегона) фактуралар ўчирилди: %s та қатор", len(led) - len(keep))
+        except Exception:
+            log.exception("DG tozalash")
 
 
 FIKS_SEED = [  # фойдаланувчи 04.11.2026 да берган Gavhar возврат фиксацияси (сегмент: грамм, сумма $)
@@ -149,6 +163,15 @@ def load_cfg():
         except Exception:
             pass
     # бир марталик: Admin да сақланган сериялар рўйхатига QQW қўшилади (Gavhar QQW ни Вакс нархида ёзади)
+    # бир марталик (05.11.2026): ZSG/QSG — Вакс нархида, фақат 001491–001496 моделлари — Дорика (қиммат) нархида
+    if not cfg.get("seriya_v4"):
+        cfg["seriya_tosh"] = ["ZSG", "QSG", "QSW", "QSF", "QQF", "QQW"]
+        cfg["model_tur"] = {f"{s}{n:06d}": "Дорика" for s in ("ZSG", "QSG") for n in range(1491, 1497)}
+        cfg["seriya_v4"] = cfg["seriya_v3"] = cfg["seriya_qqw"] = True
+        try:
+            save_cfg(cfg)
+        except Exception:
+            pass
     # бир марталик (04.11.2026): ноябрь ОЙ БОШИ — Gavhar да жами ҳақдорлик 1 753 267.82 $ (фойдаланувчи берган)
     if not cfg.get("oy_boshi_v1"):
         cfg["oy_boshi"] = {"sana": "2026-11-01", "pul": 591236.63, "vozvrat": 1162031.19, "jami": 1753267.82,

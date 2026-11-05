@@ -920,7 +920,7 @@ function sozlamaHtml() {
       <div class="mut" style="font-size:12px;margin-top:10px">➕ Vozvrat qo'shish, tahrirlash, o'chirish — <a href="#" onclick="event.preventDefault();show('transh')">Transhlar bo'limida</a>.</div>
     </div>`, false)
     + fold('a_ser', '💍 Bilak uzuk va zanjir narxi', ((SOZ.seriya_tosh || []).length ? (SOZ.seriya_tosh || []).length + ' ta istisno' : 'Braslet / Dorika') + (Object.keys(SOZ.model_tur || {}).length ? ' · ' + Object.keys(SOZ.model_tur).length + ' model' : ''), `<div class="card">
-      <div class="mut" style="font-size:12px;margin:4px 0 6px">Hozir: <b>hamma bilak uzuk — Braslet narxi, hamma zanjir — Dorika narxi</b> (vaks toshli QSG, ZSG ham). Faqat istisno kerak bo'lsa, seriyani yozing — u tosh narxida hisoblanadi.</div>
+      <div class="mut" style="font-size:12px;margin:4px 0 6px">Bu seriyalar <b>tosh narxida</b> (vaks → Vaks narxi). Hozir: <b>ZSG, QSG, QSW, QSF, QQF, QQW</b> — tosh (Vaks) narxi, faqat 001491–001496 modellari — Dorika narxi (pastda). Qolgan bilak uzuklar — Braslet, zanjirlar — Dorika narxi.</div>
       <div class="rw" style="gap:8px"><input id="seriya" value="${esc((SOZ.seriya_tosh || []).join(', '))}" placeholder="istisno yo'q" style="flex:1">
         <button class="btn2" onclick="sozSeriya()">Saqlash</button></div>
       <div class="sm" style="font-weight:600;margin-top:14px">Model bo'yicha narx turi</div>
