@@ -2623,8 +2623,14 @@ def kirim_solishtir(ledger, prog):
             else:
                 used.add(j); res[nom].append((r, prog[j]))
         left = rest
-    res["botda"] = left
     res["dasturda"] = [p for j, p in enumerate(prog) if j not in used]
+    # ойдан ойга ўтган: Gavhar ўтган ой берган, дўкон шу ой кирим қилган — файлнинг асосий ойи бўйича ажратамиз
+    oylar = Counter((p.get("sana") or "")[:7] for p in prog)
+    asosiy = oylar.most_common(1)[0][0] if oylar else ""
+    res["asosiy_oy"] = asosiy
+    res["otgan_oy"] = [(a, b) for k in ("togri", "sana", "gramm", "narx", "model") for a, b in res[k] if (a.get("sana") or "")[:7] < asosiy]
+    res["botda"] = [r for r in left if (r.get("sana") or "")[:7] >= asosiy]  # ўтган ой Gavhar фактураси бу файлда бўлмаслиги нормал
+    res["botda_otgan"] = [r for r in left if (r.get("sana") or "")[:7] < asosiy]
     return res
 
 
@@ -2639,8 +2645,13 @@ def kirim_matn(res):
         L.append(f"⚖️ Грамми фарқ (нархи бир хил): {len(res['gramm'])} та")
     if res["narx"] or res["model"]:
         L.append(f"🔀 Нархи ёки модели бошқа ёзилган: {len(res['narx']) + len(res['model'])} та")
+    if res.get("otgan_oy"):
+        oo = res["otgan_oy"]
+        L.append(f"↪️ Ойдан ойга ўтган: {len(oo)} та товар ({jf(oo):,.2f} $) — Gavhar ўтган ой берган, дўкон {oy_nom(res.get('asosiy_oy', ''))} кирим қилган. Ботда ўтган ой ҳисобида, тўғри.")
     b = res["botda"]
-    L.append(f"❗ Gavhar фактурасида бор — ДАСТУРДА КИРИМ ЙЎҚ: {len(b)} та · {sm(b):,.2f} $" if b else "✅ Gavhar ёзган ҳамма товар дастурга кирим қилинган")
+    L.append(f"❗ Gavhar фактурасида бор — бу файлда КИРИМ ЙЎҚ: {len(b)} та · {sm(b):,.2f} $ "
+             f"(дўкон кейинги ойда кирим қилган бўлса — кейинги ой файлида «↪️ ойдан ойга ўтган» бўлиб чиқади)" if b
+             else "✅ Gavhar ёзган ҳамма товар дастурга кирим қилинган")
     if b:
         g = OrderedDict()
         for r in sorted(b, key=lambda r: (r["sana"], r["filial"])):

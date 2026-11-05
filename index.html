@@ -188,7 +188,7 @@ function show(p, force) {
   window.scrollTo(0, 0);
   if (!loaded[p] || force) { loaded[p] = true; ({holat: loadHolat, faktura: loadFaktura, xato: loadXato, transh: loadTransh, admin: loadAdmin})[p](); }
 }
-function invalidate() { loaded.holat = loaded.faktura = loaded.xato = false; FO = null; }
+function invalidate() { FDALL = null; loaded.holat = loaded.faktura = loaded.xato = false; FO = null; }
 
 /* ---------- ochib-yopiladigan bo'lim (holati eslab qolinadi) ---------- */
 function foldOpen(id, def) { try { const v = localStorage.getItem('fold_' + id); return v === null ? def : v === '1'; } catch (e) { return def; } }
@@ -456,7 +456,7 @@ function renderFaktura() {
   const op = el.querySelector('.inv.open'); if (op) op.scrollIntoView({block: 'center'});
 }
 /* ---------- DO'KON QIDIRUV ---------- */
-let FQ = '', FV = 'inv', CURG = null;
+let FQ = '', FV = 'inv', CURG = null, FDALL = null;
 const nk = s => L(s || '').toLowerCase().replace(/[ʻʼ’'`‘]/g, '').replace(/filiali?|mini do.?koni|do.?koni/g, '').replace(/ye/g, 'e')
   .replace(/x/g, 'h').replace(/q/g, 'k').replace(/g'/g, 'g').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 const nkz = s => nk(s).replace(/ /g, '');  // бўшлиқсиз: «andijon1» = «Андижон-1»
@@ -465,7 +465,10 @@ function listFaktura() {
   const box = $('#flist'); if (!box || !CURG) return;
   const q = nk(FQ), qz = nkz(FQ), qs_ = nks(FQ);
   // қидирувда — ҳамма пуллар бўйича (танланган транш эмас); бўлмаса — танланган транш
-  const base = q ? FD.groups.flatMap(x => x.items).concat(FD.other || []) : CURG.items.concat(FD.other || []);
+  // ой танланган бўлса ҳам — қидирувда БАРЧА ОЙЛАР бўйича (ўтган ой фактураси шу ой кирим бўлган бўлиши мумкин)
+  if (q && F.oy && !FDALL) { FDALL = 'loading'; api('/api/fakturalar').then(d => { FDALL = d; listFaktura(); }).catch(() => { FDALL = null; }); }
+  const src = q && F.oy && FDALL && FDALL !== 'loading' ? FDALL : FD;
+  const base = q ? src.groups.flatMap(x => x.items).concat(src.other || []) : CURG.items.concat(FD.other || []);
   const seen = new Set(), all = base.filter(a => !seen.has(a.key) && seen.add(a.key)).sort((a, b) => (b.yuk ?? -1) - (a.yuk ?? -1));
   const items = all.filter(a => !q || nk(a.filial + ' ' + a.faktura).includes(q) || nkz(a.filial).includes(qz) || (qs_.length >= 3 && nks(a.filial).includes(qs_)) || (a.faktura || '').toLowerCase().includes(FQ.trim().toLowerCase()));
   if (FV === 'dok') {
@@ -481,7 +484,7 @@ function listFaktura() {
     box.querySelectorAll('.dok').forEach(c => c.onclick = () => { FQ = c.dataset.f; FV = 'inv'; renderFaktura(); window.scrollTo(0, $('#fq').getBoundingClientRect().top + scrollY - 80); });
     return;
   }
-  box.innerHTML = `<div class="mut" style="margin:0 4px 8px">${q ? `${items.length} ta faktura topildi — barcha transhlar bo'yicha${F.oy ? ' (tanlangan oy ichida)' : ''}` : 'Oxirgi yuklangan fakturalar tepada'}</div>` +
+  box.innerHTML = `<div class="mut" style="margin:0 4px 8px">${q ? `${items.length} ta faktura topildi — barcha transhlar${F.oy ? (FDALL && FDALL !== 'loading' ? " va BARCHA OYLAR bo'yicha" : ' · boshqa oylar yuklanmoqda…') : ''}` : 'Oxirgi yuklangan fakturalar tepada'}</div>` +
     (items.length ? items.slice(0, 200).map(a => invCard(a)).join('') + (items.length > 200 ? `<div class="card empty">… yana ${items.length - 200} ta — qidiruvni aniqlashtiring</div>` : '')
       : `<div class="card empty">${q ? 'Hech narsa topilmadi' : 'Bu transh bo\'yicha faktura yo\'q'}</div>`);
   box.querySelectorAll('.inv').forEach(c => c.onclick = e => {
