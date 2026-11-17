@@ -692,6 +692,11 @@ def bilak_zanjir(r):
     return bool(BRASLET_RE.search(k) or ZANJIR_RE.search(k) or BRASLET_RE.search(n.split(" proba")[0]) or ZANJIR_RE.match(first))
 
 
+def fiks_tur(r):
+    """Возвратда билак узук ва занжирнинг ҳамма тури (Вакс, Дорика, тошли…) битта «Браслет Занжир» тури бўйича."""
+    return "Браслет" if bilak_zanjir(r) else r["tur"]
+
+
 def fiks_nomzod(r):
     """Фиксациянинг қайси сегментидан айирилади: занжир ва билак узук — ҳар доим «Браслет Занжир» (17.11.2026 фойдаланувчи),
     қолганлари — тош тури бўйича (Ван Клиф/Детский → Дорика)."""
@@ -714,7 +719,7 @@ def fiks_try(cfg, r, g, s, chegara):
                                                           and abs(f1 - f["turlar"][c]["summa"] / f["turlar"][c]["gramm"]) <= chegara))), None)
         if not x:
             continue
-        mx = fiks_max_narx(cfg, r["tur"])
+        mx = fiks_max_narx(cfg, fiks_tur(r))
         if mx and f1 > mx + chegara:
             return ("narx", mx)
         x["_used"] = x.get("_used", 0.0) + s; x["_n"] = x.get("_n", 0) + 1; x["_g"] = x.get("_g", 0.0) + g
@@ -1331,7 +1336,7 @@ def _compute(cfg, ledger, returns=None):
                     ob_ = cfg.get("oy_boshi") or {}
                     r["_pool_hint"] = (f"Нарх возврат {q['no']}-қисм (биржа {q['birja']}) нархига мос ({s / g:.2f} $/гр), лекин {_dmy(ob_.get('sana'))} "
                                        f"ой бошидан {q['no']}-қисм йўқ — Gavhar билан келишилган возврат фақат {ob_.get('vozvrat_matn') or 'фиксация'}. "
-                                       f"Фиксация нархи: {fiks_narx_matn(cfg, r['tur'])}. Янги товар бўлса — {cost / g:.2f} $ (пул нархи).")
+                                       f"Фиксация нархи: {fiks_narx_matn(cfg, fiks_tur(r))}. Янги товар бўлса — {cost / g:.2f} $ (пул нархи).")
                     break
                 if q.get("faol") is not False and not q_yopiq(q, i, r) and pq0 and abs(s / g - pq0) <= chegara:
                     r["_pool_hint"] = (f"Нарх возврат {q['no']}-қисм нархига мос ({pq0:.2f} $/гр), лекин {q['no']}-қисм суммаси ТУГАГАН "
@@ -1340,7 +1345,7 @@ def _compute(cfg, ledger, returns=None):
                     break
                 if q.get("faol") is False and pq0 and abs(s / g - pq0) <= chegara:
                     r["_pool_hint"] = (f"Бу нарх ({s / g:.2f} $/гр) — возврат {q['no']}-қисм (биржа {q['birja']}) нархи, лекин {q['no']}-қисм "
-                                       f"ТЎХТАТИЛГАН (возврат фақат фиксация бўйича: {fiks_narx_matn(cfg, r['tur'])}). "
+                                       f"ТЎХТАТИЛГАН (возврат фақат фиксация бўйича: {fiks_narx_matn(cfg, fiks_tur(r))}). "
                                        f"Янги товар бўлса — {cost / g:.2f} $ (пул нархи).")
                     break
             for q in vq:
@@ -1451,7 +1456,7 @@ def _compute(cfg, ledger, returns=None):
                     r["izoh"] = r.pop("_pool_hint")
                 if r.get("_ret_hint"):
                     r["izoh"] += " " + r.pop("_ret_hint")
-                vm = vozvrat_narx_matn(cfg, r["tur"])
+                vm = vozvrat_narx_matn(cfg, fiks_tur(r))
                 if vm and "возврат" not in r["izoh"].lower():
                     r["izoh"] += f" Возврат нархларига ҳам мос эмас ({vm})."
         if any(n == "пул етмади" for n, _, _ in parts):
