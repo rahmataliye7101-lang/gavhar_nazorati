@@ -704,7 +704,7 @@ def fiks_try(cfg, r, g, s, chegara):
             return ("narx", mx)
         x["_used"] = x.get("_used", 0.0) + s; x["_n"] = x.get("_n", 0) + 1; x["_g"] = x.get("_g", 0.0) + g
         nom = oy_nom(f["oy"])
-        r.update(transh="возврат", vozvrat_qism="Ф" + f["oy"], hisob=s, hisob_1gr=f1, farq_gr=0.0, farq=0.0,
+        r.update(transh="возврат", vozvrat_qism="Ф" + f["oy"], hisob=s, hisob_1gr=f1, fakt_1gr=f1, farq_gr=0.0, farq=0.0,
                  holat="✓ возврат товар",
                  vozvrat_manba=(f"фиксация {nom}: «{x.get('_nom', r['tur'])}» ({x['summa']:,.0f} $ дан, қолди {x['summa'] - x['_used']:,.0f} $"
                                + (f", {x['gramm'] - x['_g']:,.2f} гр" if x.get("gramm") else "") + f"), {g:.2f} гр × {f1:.2f} $/гр"),
@@ -741,7 +741,7 @@ def fiks_tafsil(fs, chegara=0.3):
     return L
 
 
-FIKS_MAP = {"Кузсиз": ["Вакс"], "Дорика": ["Дорика", "Браслет"]}  # фиксациядаги «Браслет Занжир» — билакузук ва занжир
+FIKS_MAP = {"Кузсиз": ["Вакс"], "Дорика": ["Дорика", "Браслет"], "Ван Клиф": ["Дорика", "Браслет"]}  # Ван Клиф возвратдан ўрнига берилса — Дорика нархида (17.11.2026)  # фиксациядаги «Браслет Занжир» — билакузук ва занжир
 _NUM = r"\d{1,3}(?:[ \u00a0\u202f']\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?"
 
 
