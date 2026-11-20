@@ -643,7 +643,7 @@ def fiks_list(cfg):
 def fiks_reset(cfg):
     for f in fiks_list(cfg):
         for tn, x in f["turlar"].items():
-            x["_used"], x["_n"], x["_g"] = 0.0, 0, 0.0
+            x["_used"], x["_n"], x["_g"], x["_ortiq"] = 0.0, 0, 0.0, 0.0
             x["_nom"] = "Браслет/Занжир" if tn == "Браслет" else tn
 
 
@@ -718,8 +718,8 @@ def fiks_try(cfg, r, g, s, chegara):
         # фиксацияда грамм бор бўлса — возврат 1 гр нархи = сумма ÷ грамм; товар шу нархда бўлиши шарт (±чегара)
         x = next((f["turlar"][c] for c in fiks_nomzod(r)
                   if c in f["turlar"] and f["turlar"][c]["summa"] - f["turlar"][c].get("_used", 0.0) >= s - 1
-                  and (not f["turlar"][c].get("gramm") or (f["turlar"][c]["gramm"] - f["turlar"][c].get("_g", 0.0) >= g - 0.01
-                                                          and abs(f1 - f["turlar"][c]["summa"] / f["turlar"][c]["gramm"]) <= chegara))), None)
+                  and (not f["turlar"][c].get("gramm") or abs(f1 - f["turlar"][c]["summa"] / f["turlar"][c]["gramm"]) <= chegara)), None)
+        # 20.11.2026: чеклов — СУММА (возврат қиймати); грамм фақат маълумот учун (ортиб кетса фиксация жадвалида кўринади)
         if not x:
             continue
         mx = fiks_max_narx(cfg, fiks_tur(r))
@@ -737,35 +737,48 @@ def fiks_try(cfg, r, g, s, chegara):
 
 
 def fiks_xato(cfg, r, g, s, chegara, pul_1gr):
-    """Возвратдан берилган товар: фиксация ТУР бўйича жами сумма ва грамм билан берилган, ҳар бир товарнинг 1 гр нархи
-    ўртачадан бир оз фарқ қилади. Нархи пул нархидан кўра фиксация нархига яқин бўлса — возврат товар (✓), фактура
-    суммаси фиксациядан айирилади. Тўғрилиги жами бўйича текширилади: ишлатилган сумма ÷ грамм ≤ фиксация нархи."""
+    """Возвратдан берилган товар: фиксация ТУР бўйича жами сумма ва грамм билан берилган, ҳар бир товар 1 гр нархи
+    ўртачадан бир оз фарқ қилади. Товар НАРХИ ЭНГ ЯҚИН фиксацияга (масалан 93.27 → сентябр, 88.23 → октябр) тушади;
+    у тугаган бўлса — бошқа ойга ўтказилмайди (арзон ойдан айириб юборилмасин), хато сифатида кўрсатилади."""
     if not cfg.get("xato_fiksdan", True):
         return False
     sana = r.get("sana") or ""
     f1 = s / g
+    cand = []
     for f in fiks_list(cfg):
         if f.get("faol") is False or (sana and sana[:7] < f["oy"]):
             continue
         for c in fiks_nomzod(r):
             x = f["turlar"].get(c)
-            if not x or not x.get("gramm"):
-                continue
-            p = x["summa"] / x["gramm"]
-            if abs(f1 - p) >= abs(f1 - pul_1gr):  # пул нархига яқинроқ — янги товар, пулдан
-                continue
-            if x["summa"] - x.get("_used", 0.0) < s - 1 or x["gramm"] - x.get("_g", 0.0) < g - 0.01:
-                continue
-            x["_used"] = x.get("_used", 0.0) + s; x["_n"] = x.get("_n", 0) + 1; x["_g"] = x.get("_g", 0.0) + g
-            nom = oy_nom(f["oy"])
-            r.update(transh="возврат", vozvrat_qism="Ф" + f["oy"], hisob=s, hisob_1gr=f1, fakt_1gr=f1, farq_gr=0.0, farq=0.0,
-                     holat="✓ возврат товар", fiks_ort=p,
-                     vozvrat_manba=(f"фиксация {nom}: «{x.get('_nom', c)}» ({x['summa']:,.0f} $ дан, қолди {x['summa'] - x['_used']:,.0f} $, "
-                                    f"{x['gramm'] - x['_g']:,.2f} гр), {g:.2f} гр × {f1:.2f} $/гр (фиксация ўртачаси {p:.2f})"),
-                     izoh=(f"Возврат товар — {nom} фиксациясидаги «{x.get('_nom', c)}» дан айирилди. 1 гр {f1:.2f} $ "
-                           f"(фиксация ўртачаси {p:.2f}; возвратда ҳар товар нархи ўз ҳолича, жами сумма ва грамм бўйича текширилади)."))
-            return True
-    return False
+            if x and x.get("gramm"):
+                cand.append((abs(f1 - x["summa"] / x["gramm"]), f["oy"], f, c, x))
+    if not cand:
+        return False
+    _, _, f, c, x = min(cand, key=lambda k: (round(k[0], 2), k[1]))
+    p = x["summa"] / x["gramm"]
+    nom = oy_nom(f["oy"])
+    if abs(f1 - p) >= abs(f1 - pul_1gr):  # пул нархига яқинроқ — янги товар, пулдан
+        return False
+    if x["summa"] - x.get("_used", 0.0) < s - 1:
+        # фиксация тугаган: товар возврат нархида — пулдан ҳам, бошқа ойдан ҳам айирилмайди; ортиқча берилган деб белгиланади
+        q0 = max(0.0, x["summa"] - x.get("_used", 0.0))
+        x["_used"] = x.get("_used", 0.0) + q0; x["_ortiq"] = x.get("_ortiq", 0.0) + (s - q0)
+        x["_n"] = x.get("_n", 0) + 1; x["_g"] = x.get("_g", 0.0) + g
+        r.update(transh="возврат", vozvrat_qism="Ф" + f["oy"], hisob=s, hisob_1gr=f1, fakt_1gr=f1, farq_gr=0.0, farq=0.0,
+                 holat="⚠ возврат тугаган", fiks_ort=p,
+                 vozvrat_manba=f"фиксация {nom}: «{x.get('_nom', c)}» — ТУГАГАН, {s - q0:,.2f} $ ортиқча",
+                 izoh=(f"Возврат фиксацияси ТУГАГАН: нарх {nom} «{x.get('_nom', c)}» нархига ({p:.2f}) тўғри келади, лекин унда "
+                       f"{q0:,.2f} $ қолган эди, бу товар {s:,.2f} $. Ортиқчаси {s - q0:,.2f} $ — пулдан ҳам, бошқа ойдан ҳам айирилмади. "
+                       f"Gavhar билан солиштиринг (фиксация суммаси ёки товар нархи хато)."))
+        return True
+    x["_used"] = x.get("_used", 0.0) + s; x["_n"] = x.get("_n", 0) + 1; x["_g"] = x.get("_g", 0.0) + g
+    r.update(transh="возврат", vozvrat_qism="Ф" + f["oy"], hisob=s, hisob_1gr=f1, fakt_1gr=f1, farq_gr=0.0, farq=0.0,
+             holat="✓ возврат товар", fiks_ort=p,
+             vozvrat_manba=(f"фиксация {nom}: «{x.get('_nom', c)}» ({x['summa']:,.0f} $ дан, қолди {x['summa'] - x['_used']:,.0f} $, "
+                            f"{x['gramm'] - x['_g']:,.2f} гр), {g:.2f} гр × {f1:.2f} $/гр (фиксация ўртачаси {p:.2f})"),
+             izoh=(f"Возврат товар — {nom} фиксациясидаги «{x.get('_nom', c)}» дан айирилди. 1 гр {f1:.2f} $ "
+                   f"(фиксация ўртачаси {p:.2f}; возвратда ҳар товар нархи ўз ҳолича, жами сумма бўйича текширилади)."))
+    return True
 
 
 def fiks_stats(cfg):
@@ -775,6 +788,7 @@ def fiks_stats(cfg):
         for tn, x in f["turlar"].items():
             u, g_ = x.get("_used", 0.0), x.get("_g", 0.0)
             T.append(dict(tur="Браслет/Занжир" if tn == "Браслет" else tn, summa=x["summa"], gramm=x.get("gramm"), used=u, left=x["summa"] - u, n=x.get("_n", 0), g=g_,
+                          ortiq=x.get("_ortiq", 0.0),
                           ort=(u / g_ if g_ else None), fiks_1gr=(x["summa"] / x["gramm"] if x.get("gramm") else None)))
         sm, u = sum(t["summa"] for t in T), sum(t["used"] for t in T)
         out.append(dict(oy=f["oy"], nom=oy_nom(f["oy"]), faol=f.get("faol", True), summa=sm, used=u, left=sm - u,
@@ -788,6 +802,8 @@ def fiks_tafsil(fs, chegara=0.3):
         x = f"{t['tur']}: {t['summa']:,.0f} $ → ишлатилди {t['used']:,.0f} ({t['n']} та) · қолди {t['left']:,.0f} $"
         if t.get("gramm"):
             x += f" · грамм: {t['g']:,.2f} / {t['gramm']:,.2f}, қолди {t['gramm'] - t['g']:,.2f} гр"
+        if t.get("ortiq"):
+            x += f" · ⚠ тугагандан кейин яна {t['ortiq']:,.2f} $ товар берилган"
         if t["ort"]:
             x += f" · ўртача {t['ort']:.2f} $/гр"
             if t["fiks_1gr"]:
@@ -1750,6 +1766,8 @@ def belgila(rows, cfg):
                 t_ = "Бошқа биржа нархида ҳисобланган"
             elif "пул шу товарда тугаб" in z:
                 t_ = "Пул алмашган жойда нарх хато"
+            elif "фиксацияси ТУГАГАН" in z:
+                t_ = "Возврат фиксацияси тугаган"
             elif "Тур аниқланмади" in z:
                 t_ = "Товар тури аниқланмади"
             elif "грамм" in h or "нарх йўқ" in h or "транш йўқ" in h:
@@ -2553,6 +2571,8 @@ def xato_turi_aniq(r, cfg, ch=None):
     f1 = r.get("fakt_1gr")
     if f1 is None:
         return "Нарх йўқ", "Фактурада нарх ёзилмаган"
+    if str(r.get("holat", "")).startswith("⚠ возврат тугаган"):
+        return "Возврат фиксацияси тугаган", (r.get("izoh") or "").split(". Ортиқчаси")[0]
     nos = [int(x) for x in re.findall(r"№(\d+)", str(r.get("transh") or ""))]
     trs = sorted(cfg.get("transhlar", []), key=lambda t: (t["no"] not in nos, t["sana"]))
     tt = tosh_tur(r.get("nomi"))
