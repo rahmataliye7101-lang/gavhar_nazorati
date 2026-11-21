@@ -644,6 +644,7 @@ def fiks_reset(cfg):
     for f in fiks_list(cfg):
         for tn, x in f["turlar"].items():
             x["_used"], x["_n"], x["_g"], x["_ortiq"] = 0.0, 0, 0.0, 0.0
+            x["_berdi"], x["_oldi"] = {}, {}  # тур тугаса — ой ичида бошқа тур ҳисобидан: {тур: $}
             x["_nom"] = "Браслет/Занжир" if tn == "Браслет" else tn
 
 
@@ -708,6 +709,48 @@ def fiks_nomzod(r):
     return FIKS_MAP.get(t, [t])
 
 
+def fiks_oy_qoldi(f):
+    """Фиксация ОЙИНИНГ жами қолдиғи (ҳамма турлар): Gavhar возвратни ой жамиси бўйича ёпади."""
+    return sum(x["summa"] for x in f["turlar"].values()) - sum(x.get("_used", 0.0) for x in f["turlar"].values())
+
+
+def fiks_sigadi(cfg, f, x, s):
+    """Товар шу фиксациядан айирилса бўладими: аввал тур суммаси; тур тугаган бўлса — ой жамиси (fiks_oy_jami, 21.11.2026)."""
+    if x["summa"] - x.get("_used", 0.0) >= s - 1:
+        return True
+    return bool(cfg.get("fiks_oy_jami", True)) and fiks_oy_qoldi(f) >= s - 1
+
+
+def fiks_ayir(f, x, s):
+    """Товар суммасини фиксациядан айиради: аввал ўз туридан; тур тугаган бўлса — шу ойнинг бошқа турлари ҳисобидан
+    (энг кўп қолгани биринчи). Қайтаради: {бошқа тур номи: $} — изоҳ учун."""
+    own = min(s, max(0.0, x["summa"] - x.get("_used", 0.0)))
+    x["_used"] = x.get("_used", 0.0) + own
+    rest, out = s - own, {}
+    for y in sorted((y for y in f["turlar"].values() if y is not x), key=lambda y: -(y["summa"] - y.get("_used", 0.0))):
+        if rest <= 1e-9:
+            break
+        q = min(rest, max(0.0, y["summa"] - y.get("_used", 0.0)))
+        if q <= 1e-9:
+            continue
+        y["_used"] = y.get("_used", 0.0) + q
+        y.setdefault("_berdi", {})[x.get("_nom")] = y["_berdi"].get(x.get("_nom"), 0.0) + q
+        x.setdefault("_oldi", {})[y.get("_nom")] = x["_oldi"].get(y.get("_nom"), 0.0) + q
+        out[y.get("_nom")] = out.get(y.get("_nom"), 0.0) + q
+        rest -= q
+    if rest > 1e-6:  # ой жамиси ҳам етмади (чақирувчи текширади) — ўз турига ёзилади
+        x["_used"] += rest
+    return out
+
+
+def fiks_boshqa_izoh(x, f, out, s):
+    """«Вакс» тури тугаган: 444.44 $ «Бриллиант» ҳисобидан берилди (сентябр 2026)."""
+    if not out:
+        return ""
+    return (f" «{x.get('_nom')}» тури тугаган — шу товардан " + ", ".join(f"{v:,.2f} $ «{k}»" for k, v in out.items())
+            + f" ҳисобидан берилди ({oy_nom(f['oy'])} жами бўйича, ойда қолди {fiks_oy_qoldi(f):,.2f} $).")
+
+
 def fiks_try(cfg, r, g, s, chegara):
     """Пул нархига тушмаган товарни возврат фиксациясидан ёпиш. True — ёпилди; ("narx", max) — нарх жуда баланд; None — йўқ."""
     sana = r.get("sana") or ""
@@ -717,7 +760,7 @@ def fiks_try(cfg, r, g, s, chegara):
             continue
         # фиксацияда грамм бор бўлса — возврат 1 гр нархи = сумма ÷ грамм; товар шу нархда бўлиши шарт (±чегара)
         x = next((f["turlar"][c] for c in fiks_nomzod(r)
-                  if c in f["turlar"] and f["turlar"][c]["summa"] - f["turlar"][c].get("_used", 0.0) >= s - 1
+                  if c in f["turlar"] and fiks_sigadi(cfg, f, f["turlar"][c], s)
                   and (not f["turlar"][c].get("gramm") or abs(f1 - f["turlar"][c]["summa"] / f["turlar"][c]["gramm"]) <= chegara)), None)
         # 20.11.2026: чеклов — СУММА (возврат қиймати); грамм фақат маълумот учун (ортиб кетса фиксация жадвалида кўринади)
         if not x:
@@ -725,13 +768,13 @@ def fiks_try(cfg, r, g, s, chegara):
         mx = fiks_max_narx(cfg, fiks_tur(r))
         if mx and f1 > mx + chegara:
             return ("narx", mx)
-        x["_used"] = x.get("_used", 0.0) + s; x["_n"] = x.get("_n", 0) + 1; x["_g"] = x.get("_g", 0.0) + g
+        bq = fiks_ayir(f, x, s); x["_n"] = x.get("_n", 0) + 1; x["_g"] = x.get("_g", 0.0) + g
         nom = oy_nom(f["oy"])
         r.update(transh="возврат", vozvrat_qism="Ф" + f["oy"], hisob=s, hisob_1gr=f1, fakt_1gr=f1, farq_gr=0.0, farq=0.0,
-                 holat="✓ возврат товар",
+                 holat="✓ возврат товар", fiks_boshqa=bq,
                  vozvrat_manba=(f"фиксация {nom}: «{x.get('_nom', r['tur'])}» ({x['summa']:,.0f} $ дан, қолди {x['summa'] - x['_used']:,.0f} $"
                                + (f", {x['gramm'] - x['_g']:,.2f} гр" if x.get("gramm") else "") + f"), {g:.2f} гр × {f1:.2f} $/гр"),
-                 izoh=f"Возврат товар — {nom} фиксациясидаги «{x.get('_nom', r['tur'])}» қийматидан айирилди ({f1:.2f} $/гр).")
+                 izoh=f"Возврат товар — {nom} фиксациясидаги «{x.get('_nom', r['tur'])}» қийматидан айирилди ({f1:.2f} $/гр)." + fiks_boshqa_izoh(x, f, bq, s))
         return True
     return None
 
@@ -759,25 +802,26 @@ def fiks_xato(cfg, r, g, s, chegara, pul_1gr):
     nom = oy_nom(f["oy"])
     if abs(f1 - p) >= abs(f1 - pul_1gr):  # пул нархига яқинроқ — янги товар, пулдан
         return False
-    if x["summa"] - x.get("_used", 0.0) < s - 1:
+    if not fiks_sigadi(cfg, f, x, s):
         # фиксация тугаган: товар возврат нархида — пулдан ҳам, бошқа ойдан ҳам айирилмайди; ортиқча берилган деб белгиланади
-        q0 = max(0.0, x["summa"] - x.get("_used", 0.0))
-        x["_used"] = x.get("_used", 0.0) + q0; x["_ortiq"] = x.get("_ortiq", 0.0) + (s - q0)
+        q0 = max(0.0, fiks_oy_qoldi(f) if cfg.get("fiks_oy_jami", True) else x["summa"] - x.get("_used", 0.0))
+        bq = fiks_ayir(f, x, q0) if cfg.get("fiks_oy_jami", True) else (x.__setitem__("_used", x.get("_used", 0.0) + q0) or {})
+        x["_ortiq"] = x.get("_ortiq", 0.0) + (s - q0)
         x["_n"] = x.get("_n", 0) + 1; x["_g"] = x.get("_g", 0.0) + g
         r.update(transh="возврат", vozvrat_qism="Ф" + f["oy"], hisob=s, hisob_1gr=f1, fakt_1gr=f1, farq_gr=0.0, farq=0.0,
-                 holat="⚠ возврат тугаган", fiks_ort=p,
+                 holat="⚠ возврат тугаган", fiks_ort=p, fiks_ayir=q0, fiks_ortiq=s - q0,
                  vozvrat_manba=f"фиксация {nom}: «{x.get('_nom', c)}» — ТУГАГАН, {s - q0:,.2f} $ ортиқча",
-                 izoh=(f"Возврат фиксацияси ТУГАГАН: нарх {nom} «{x.get('_nom', c)}» нархига ({p:.2f}) тўғри келади, лекин унда "
+                 izoh=(f"Возврат фиксацияси ТУГАГАН: нарх {nom} «{x.get('_nom', c)}» нархига ({p:.2f}) тўғри келади, лекин {nom} фиксациясида "
                        f"{q0:,.2f} $ қолган эди, бу товар {s:,.2f} $. Ортиқчаси {s - q0:,.2f} $ — пулдан ҳам, бошқа ойдан ҳам айирилмади. "
                        f"Gavhar билан солиштиринг (фиксация суммаси ёки товар нархи хато)."))
         return True
-    x["_used"] = x.get("_used", 0.0) + s; x["_n"] = x.get("_n", 0) + 1; x["_g"] = x.get("_g", 0.0) + g
+    bq = fiks_ayir(f, x, s); x["_n"] = x.get("_n", 0) + 1; x["_g"] = x.get("_g", 0.0) + g
     r.update(transh="возврат", vozvrat_qism="Ф" + f["oy"], hisob=s, hisob_1gr=f1, fakt_1gr=f1, farq_gr=0.0, farq=0.0,
-             holat="✓ возврат товар", fiks_ort=p,
+             holat="✓ возврат товар", fiks_ort=p, fiks_boshqa=bq,
              vozvrat_manba=(f"фиксация {nom}: «{x.get('_nom', c)}» ({x['summa']:,.0f} $ дан, қолди {x['summa'] - x['_used']:,.0f} $, "
                             f"{x['gramm'] - x['_g']:,.2f} гр), {g:.2f} гр × {f1:.2f} $/гр (фиксация ўртачаси {p:.2f})"),
              izoh=(f"Возврат товар — {nom} фиксациясидаги «{x.get('_nom', c)}» дан айирилди. 1 гр {f1:.2f} $ "
-                   f"(фиксация ўртачаси {p:.2f}; возвратда ҳар товар нархи ўз ҳолича, жами сумма бўйича текширилади)."))
+                   f"(фиксация ўртачаси {p:.2f}; возвратда ҳар товар нархи ўз ҳолича, жами сумма бўйича текширилади)." + fiks_boshqa_izoh(x, f, bq, s)))
     return True
 
 
@@ -788,12 +832,63 @@ def fiks_stats(cfg):
         for tn, x in f["turlar"].items():
             u, g_ = x.get("_used", 0.0), x.get("_g", 0.0)
             T.append(dict(tur="Браслет/Занжир" if tn == "Браслет" else tn, summa=x["summa"], gramm=x.get("gramm"), used=u, left=x["summa"] - u, n=x.get("_n", 0), g=g_,
-                          ortiq=x.get("_ortiq", 0.0),
-                          ort=(u / g_ if g_ else None), fiks_1gr=(x["summa"] / x["gramm"] if x.get("gramm") else None)))
+                          ortiq=x.get("_ortiq", 0.0), berdi=dict(x.get("_berdi") or {}), oldi=dict(x.get("_oldi") or {}),
+                          tovar=u - sum((x.get("_berdi") or {}).values()) + sum((x.get("_oldi") or {}).values()),  # шу тур товарлари қиймати
+                          ort=((u - sum((x.get("_berdi") or {}).values()) + sum((x.get("_oldi") or {}).values()) + x.get("_ortiq", 0.0)) / g_ if g_ else None),
+                          fiks_1gr=(x["summa"] / x["gramm"] if x.get("gramm") else None)))
         sm, u = sum(t["summa"] for t in T), sum(t["used"] for t in T)
+        gm, gu = sum(t["gramm"] or 0 for t in T), sum(t["g"] for t in T)
         out.append(dict(oy=f["oy"], nom=oy_nom(f["oy"]), faol=f.get("faol", True), summa=sm, used=u, left=sm - u,
-                        n=sum(t["n"] for t in T), turlar=T))
+                        gramm=gm, g=gu, gleft=gm - gu, n=sum(t["n"] for t in T), turlar=T))
     return out
+
+
+def fiks_nazorat(rows, cfg):
+    """НАЗОРАТ НУҚТАСИ (ой бўйича): Gavhar фиксацияси (сумма + грамм) ↔ берилган возврат товар (сумма + грамм).
+    Тош турлари алмашса ҳам майли — якунда жами сумма ва жами грамм бир-бирига мос бўлиши керак."""
+    ob = (cfg.get("oy_boshi") or {}).get("sana") or ""
+    out = []
+    for f in fiks_stats(cfg):
+        if not f["faol"]:
+            continue
+        q = "Ф" + f["oy"]
+        rs = [r for r in rows if r.get("transh") == "возврат" and str(r.get("vozvrat_qism")) == q and (not ob or (r.get("sana") or "") >= ob)]
+        sm = sum(r.get("summa") or 0 for r in rs)
+        gr = sum(r.get("gramm") or 0 for r in rs)
+        fp = {}
+        for c_, x_ in (next((x for x in fiks_list(cfg) if x["oy"] == f["oy"]), {}).get("turlar") or {}).items():
+            if x_.get("gramm"):
+                fp[c_] = x_["summa"] / x_["gramm"]
+        kut = sum((r.get("gramm") or 0) * fp.get(FIKS_MAP.get(fiks_tur(r), [fiks_tur(r)])[0], sm / gr if gr else 0) for r in rs)
+        avg = f["summa"] / f["gramm"] if f["gramm"] else None
+        ql, qg = f["summa"] - sm, f["gramm"] - gr
+        if abs(ql) <= 1 and abs(qg) <= 0.5:
+            h, kod = "✅ ЁПИЛДИ — сумма ва грамм мос", "ok"
+        elif ql < -1 or qg < -0.5:
+            h, kod = ("⚠ ОРТИҚЧА БЕРИЛГАН: " + ", ".join(x for x in [f"{-ql:,.2f} $" if ql < -1 else "", f"{-qg:,.2f} гр" if qg < -0.5 else ""] if x)), "ort"
+        elif ql <= 1:
+            h, kod = (f"⚠ сумма тугади, лекин {qg:,.2f} гр берилмаган (≈ {qg * (avg or 0):,.2f} $) — Gavhar товарни фиксациядан қиммат ёзган"), "qimmat"
+        elif qg <= 0.5:
+            h, kod = f"⚠ грамм тугади, лекин {ql:,.2f} $ қолди — Gavhar товарни фиксациядан арзон ёзган", "arzon"
+        else:
+            p_ = ql / qg
+            h, kod = f"🟢 давом этмоқда: қолди {ql:,.2f} $ / {qg:,.2f} гр (қолганнинг 1 гр = {p_:,.2f}, фиксация ўртачаси {avg:,.2f})", "davom"
+            if avg and abs(p_ - avg) > 0.5:
+                h += (" — ⚠ нисбат бузиляпти: " + ("гр кўп қоляпти, товар қиммат ёзиляпти" if p_ < avg else "сумма кўп қоляпти, товар арзон ёзиляпти"))
+        out.append(dict(oy=f["oy"], nom=f["nom"], f_summa=f["summa"], f_gramm=f["gramm"], avg=avg, summa=sm, gramm=gr, n=len(rs),
+                        q_summa=ql, q_gramm=qg, kutilgan=kut, narx_farq=sm - kut, holat=h, kod=kod))
+    return out
+
+
+def fiks_nazorat_matn(rows, cfg):
+    L = ["🎯 НАЗОРАТ НУҚТАСИ — возврат: Gavhar айтган сумма ва грамм ↔ берилган товар (тош турлари алмашса ҳам майли):"]
+    for x in fiks_nazorat(rows, cfg):
+        L.append(f"   {x['nom'].capitalize()}: Gavhar {x['f_summa']:,.2f} $ / {x['f_gramm']:,.2f} гр → берилди {x['summa']:,.2f} $ / {x['gramm']:,.2f} гр "
+                 f"({x['n']} та) → қолди {x['q_summa']:,.2f} $ / {x['q_gramm']:,.2f} гр")
+        L.append(f"      {x['holat']}")
+        if abs(x["narx_farq"]) > 1:
+            L.append(f"      нарх: берилган товар ўз тури фиксация нархидан {x['narx_farq']:+,.2f} $ фарқ қилади")
+    return L if len(L) > 1 else []
 
 
 def fiks_tafsil(fs, chegara=0.3):
@@ -802,12 +897,18 @@ def fiks_tafsil(fs, chegara=0.3):
         x = f"{t['tur']}: {t['summa']:,.0f} $ → ишлатилди {t['used']:,.0f} ({t['n']} та) · қолди {t['left']:,.0f} $"
         if t.get("gramm"):
             x += f" · грамм: {t['g']:,.2f} / {t['gramm']:,.2f}, қолди {t['gramm'] - t['g']:,.2f} гр"
+        if t.get("oldi"):
+            x += " · ℹ тур тугаб, " + ", ".join(f"«{k}» ҳисобидан {v:,.2f} $" for k, v in t["oldi"].items()) + " берилди"
+        if t.get("berdi"):
+            x += " · ℹ шундан " + ", ".join(f"«{k}» учун {v:,.2f} $" for k, v in t["berdi"].items()) + " ишлатилди"
         if t.get("ortiq"):
-            x += f" · ⚠ тугагандан кейин яна {t['ortiq']:,.2f} $ товар берилган"
+            x += f" · ⚠ ой фиксацияси тугагандан кейин яна {t['ortiq']:,.2f} $ товар берилган"
+        if t.get("gramm") and t["g"] > t["gramm"] + 0.01:
+            x += f" · ℹ грамм {t['g'] - t['gramm']:,.2f} гр ортиқ (тур алмашган — ой жамиси назоратда)"
         if t["ort"]:
             x += f" · ўртача {t['ort']:.2f} $/гр"
             if t["fiks_1gr"]:
-                fq = t["used"] - t["g"] * t["fiks_1gr"]  # жами: берилган сумма − грамм × фиксация нархи
+                fq = t["tovar"] + (t.get("ortiq") or 0) - t["g"] * t["fiks_1gr"]  # шу тур товарлари қиймати − грамм × фиксация нархи
                 if fq > max(1.0, chegara * t["g"]):
                     x += f" ⚠ фиксацияда {t['fiks_1gr']:.2f} — жами {fq:+,.2f} $ қиммат (Gavhar дан талаб)"
                 else:
@@ -1026,13 +1127,18 @@ def manba_qatorlar(rs, tmap, cfg):
                 k = (0, "+".join(map(str, ns)), " + ".join(f"💳 №{n} пул ({_dmy(tmap[n]['sana'])}, биржа {tmap[n].get('birja_999')})" if n in tmap else f"№{n}" for n in ns))
             else:
                 k = (2, "", "❓ пулга боғланмади")
-        x = g.setdefault(k, [0, 0.0, 0, 0.0])
+        x = g.setdefault(k, [0, 0.0, 0, 0.0, 0, 0.0])
         x[0] += 1; x[1] += r["summa"] or 0
-        if str(r.get("holat", "")).startswith("⚠"):
+        if tugagan(r):
+            x[4] += 1; x[5] += r.get("fiks_ortiq") or 0
+        elif str(r.get("holat", "")).startswith("⚠"):
             x[2] += 1; x[3] += r.get("farq") or 0
     out = []
-    for (_, _, nom), (n, sm, nb_, fq) in sorted(g.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-        out.append(f"   {nom}: {n} та · {sm:,.2f} $ — " + ("✅ тўғри" if not nb_ else f"❌ {nb_} та хато ({fq:+,.2f} $)"))
+    for (_, _, nom), (n, sm, nb_, fq, nt, ot) in sorted(g.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        h = [f"❌ {nb_} та нарх хато ({fq:+,.2f} $)"] if nb_ else []
+        if nt:
+            h.append(f"⚠ {nt} таси фиксация тугагандан кейин ({ot:,.2f} $ ортиқча)")
+        out.append(f"   {nom}: {n} та · {sm:,.2f} $ — " + ("; ".join(h) if h else "✅ тўғри"))
     return out
 
 
@@ -1526,6 +1632,21 @@ def togri_izoh(parts, tr, fb=None, sana=None):
             + " — тўғри.")
 
 
+def tugagan(r):
+    """Возврат нархида, лекин фиксация тугаган товар (нарх хатоси эмас — возврат суммаси етмаган)."""
+    return str(r.get("holat", "")).startswith("⚠ возврат тугаган")
+
+
+def tugagan_matn(rs):
+    """«⚠ 2 та товар (649.60 $) — сентябр «Вакс», «Браслет/Занжир» фиксацияси тугаган»"""
+    t = [r for r in rs if tugagan(r)]
+    if not t:
+        return ""
+    nm = sorted({re.sub(r"^фиксация ", "", (r.get("vozvrat_manba") or "").split(" — ")[0]) for r in t})
+    return (f"⚠ {len(t)} та товар ({sum(r.get('summa') or 0 for r in t):,.2f} $) возврат нархида, лекин фиксация ТУГАГАН: "
+            + "; ".join(nm) + f". Ортиқча {sum(r.get('fiks_ortiq') or 0 for r in t):,.2f} $ — пулдан ҳам айирилмади, Gavhar билан солиштиринг.")
+
+
 def faktura_xulosa(rs, tmap):
     """Фактура бўйича қисқа текширув: қайси пулда тўғри, пул алмашдими, возврат берилдими."""
     L = []
@@ -1557,10 +1678,13 @@ def faktura_xulosa(rs, tmap):
         t0 = tmap.get(ns[0], {})
         L.append(f"➡️ {len(grp_)} та товар — олдинги пулга ва возвратга мос келмади, "
                  f"{ns[0]}-пул ({_dmy(t0.get('sana'))}, биржа {t0.get('birja_999')}) нархида тўғри")
-    if rv:
-        r1n = sum(1 for r in rv if (r.get("vozvrat_qism") or 1) == 1)
-        L.append(f"↩️ {len(rv)} та товар — возврат товар берилди, возврат нархида тўғри"
-                 + (f" (рўйхатдан {r1n}, {len(rv) - r1n} таси сумма бўйича)" if 0 < r1n < len(rv) else ""))
+    rv_ok = [r for r in rv if not tugagan(r)]
+    if rv_ok:
+        r1n = sum(1 for r in rv_ok if (r.get("vozvrat_qism") or 1) == 1)
+        L.append(f"↩️ {len(rv_ok)} та товар — возврат товар берилди, возврат нархида тўғри"
+                 + (f" (рўйхатдан {r1n}, {len(rv_ok) - r1n} таси сумма бўйича)" if 0 < r1n < len(rv_ok) else ""))
+    if any(tugagan(r) for r in rv):
+        L.append(tugagan_matn(rv))
     return L
 
 
@@ -1670,7 +1794,8 @@ def oy_tovar(rows, oy):
     return dict(faktura=len({(r.get("faktura"), r.get("filial"), r.get("sana")) for r in rs}), dokon=len({r.get("filial") for r in rs}),
                 n=len(rs), gramm=sum(r.get("gramm") or 0 for r in rs), summa=sm(rs),
                 puldan=sum(sum((r.get("sarf") or {}).values()) for r in rs), vozvrat=sm(rv), yetmadi=sm(yt),
-                xato_n=sum(1 for r in rs if str(r.get("holat", "")).startswith("⚠")),
+                tugagan=sum(r.get("fiks_ortiq") or 0 for r in rs if tugagan(r)), tugagan_n=sum(1 for r in rs if tugagan(r)),
+                xato_n=sum(1 for r in rs if str(r.get("holat", "")).startswith("⚠") and not tugagan(r)),
                 ortiqcha=sum(r.get("farq") or 0 for r in rs if str(r.get("holat", "")).startswith("⚠") and (r.get("farq") or 0) > 0),
                 kam=sum(r.get("farq") or 0 for r in rs if str(r.get("holat", "")).startswith("⚠") and (r.get("farq") or 0) < 0))
 
@@ -1687,6 +1812,8 @@ def oy_pullar_matn(rows, cfg, oy):
         L.append(f"   ⚠ пул етмаган: {tv['yetmadi']:,.2f} $")
     if tv["xato_n"]:
         L.append(f"   ❌ нархи хато: {tv['xato_n']} та товар" + (f", ортиқча ёзилган {tv['ortiqcha']:,.2f} $" if tv["ortiqcha"] else ""))
+    if tv.get("tugagan_n"):
+        L.append(f"   ⚠ возврат тугагандан кейин берилган: {tv['tugagan_n']} та, {tv['tugagan']:,.2f} $ (пулдан ҳам айирилмади)")
     L += ["", "💳 Пуллар:"]
     if not pl:
         return "\n".join(L + ["Бу ой учун пул йўқ."])
@@ -2137,7 +2264,10 @@ def write_invoice_report(path, fno, fil, sana_t, rs, trn, tmap=None):
             ("Возврат билан тўғриланди", "; ".join(
                 f"{qism_nom(qn)}: {sum(1 for r in rs if r.get('transh') == 'возврат' and (r.get('vozvrat_qism') or 1) == qn)} та" for qn in
                 sorted({r.get("vozvrat_qism") or 1 for r in rs if r.get("transh") == "возврат"}, key=str)) or "—"),
-            ("ХУЛОСА", "✅ ТЎҒРИ" if not nb else f"❌ ХАТО БОР — {len(nb)} та позиция, {farq:+,.2f} $")]
+            ("ХУЛОСА", "✅ ТЎҒРИ" if not nb else "; ".join(x for x in [
+                f"❌ НАРХ ХАТО — {len([r for r in nb if not tugagan(r)])} та позиция, {farq:+,.2f} $" if any(not tugagan(r) for r in nb) else "",
+                f"⚠ ВОЗВРАТ ТУГАГАН — {len([r for r in nb if tugagan(r)])} та, {sum(r.get('fiks_ortiq') or 0 for r in nb):,.2f} $ ортиқча"
+                if any(tugagan(r) for r in nb) else ""] if x))]
     for i, (k, v) in enumerate(head, 1):
         ws.cell(i, 1, k).font = Font(name=F, bold=True)
         c = ws.cell(i, 2, v)
@@ -2322,13 +2452,14 @@ def run(transh_path, ledger_path, out_path, files=(), returns_path=None):
                             b_[0] += 1; b_[1] += r["gramm"] or 0
                         for tn, (cnt, gr, pr) in sorted(bt.items(), key=lambda kv: -kv[1][1]):
                             L.append(f"     • {tn}: {cnt} та, {gr:.2f} гр × {pr:.2f} $ — возврат нархига мос")
+            nb = [r for r in nb if not tugagan(r)]  # фиксация тугагани — нарх хатоси эмас, юқорида алоҳида айтилди
             if not nb:
-                L.append(f"\n✅ ТЎҒРИ. Фактура {fakt:,.2f} $ — нархлар тўғри.")
+                L.append(f"\n✅ НАРХЛАР ТЎҒРИ. Фактура {fakt:,.2f} $." + (" Лекин возврат фиксацияси тугаган — юқорига қаранг." if any(tugagan(r) for r in rs) else ""))
             else:
-                diff = fakt - hisob
-                L.append(f"\n❌ ХАТО БОР!\n"
+                diff = sum(r.get("farq") or 0 for r in nb)
+                L.append(f"\n❌ НАРХ ХАТО БОР!\n"
                          f"   Фактура: {fakt:,.2f} $\n"
-                         f"   Тўғриси: {hisob:,.2f} $")
+                         f"   Тўғриси: {fakt - diff:,.2f} $")
                 if diff > 0:
                     L.append(f"👉 {diff:,.2f} $ ОРТИҚЧА ёзилган ({len(nb)} та товарда)")
                 else:
@@ -2633,37 +2764,380 @@ def vozvrat_tovarlar(rows, qn=None):
     return out
 
 
+def vozvrat_tekshir(rows, cfg, oraliq=0.7):
+    """Возврат йиғмаси учун текширув: (kirmagan, uzoq).
+    kirmagan — нархи фиксация нархига яқин (±oraliq), лекин возвратга эмас, пулга ёки хатога тушган товарлар;
+    uzoq — фиксациядан айирилган, лекин 1 гр нархи фиксация ўртачасидан ±чегарадан кўп фарқ қилган товарлар."""
+    ch = cfg.get("chegara_usd_gr", 0.3)
+    ob = (cfg.get("oy_boshi") or {}).get("sana") or ""
+    P = []
+    for f in fiks_list(cfg):
+        if f.get("faol") is False:
+            continue
+        for c, x in f["turlar"].items():
+            if x.get("gramm"):
+                P.append((f["oy"], c, x["summa"] / x["gramm"], x.get("_nom", c)))
+    kirmagan, uzoq = [], []
+    for r in rows:
+        f1, sa = r.get("fakt_1gr"), r.get("sana") or ""
+        if f1 is None or not r.get("gramm"):
+            continue
+        q = str(r.get("vozvrat_qism") or "")
+        if r.get("transh") == "возврат":
+            if q.startswith("Ф") and not (ob and sa < ob):
+                pp = next((p for oy, c, p, _ in P if "Ф" + oy == q and c in fiks_nomzod(r)), None)
+                if pp is not None and abs(f1 - pp) > ch:
+                    uzoq.append((r, q[1:], pp))
+            continue
+        if ob and sa < ob:
+            continue
+        cand = [(abs(f1 - p), oy, nm, p) for oy, c, p, nm in P if c in fiks_nomzod(r) and sa[:7] >= oy and abs(f1 - p) <= oraliq]
+        if cand:
+            _, oy, nm, p = min(cand)
+            kirmagan.append((r, oy, nm, p))
+    return kirmagan, uzoq
+
+
+def ob_hisob(rows, cfg):
+    """ОЙ БОШИДАН БЕРИ: ҳар манба (ой боши пули, кейин берилган пуллар, возврат фиксациялари) — бошида, ишлатилди, қолди;
+    ҳар фактура — қайси пулдан ва қайси возвратдан қанча айирилгани (изоҳ билан)."""
+    ob = cfg.get("oy_boshi") or {}
+    D = ob.get("sana") or ""
+    rs = [r for r in rows if not D or (r.get("sana") or "") >= D]
+    pno = (cfg.get("_ob_bizda") or {}).get("pul_no") or ob.get("pul_no")
+    trs = sorted([t for t in cfg.get("transhlar", []) if t.get("faol", True) and not t.get("faqat_tekshiruv")], key=lambda t: (t["sana"], t["no"]))
+    M = []
+    for t in trs:
+        if D and t["sana"] <= D and t["no"] != pno:
+            continue
+        bosh = float(ob.get("pul") or 0) if (D and t["no"] == pno) else float(t["summa_usd"])
+        u = sum((r.get("sarf") or {}).get(t["no"], 0) for r in rs)
+        n = sum(1 for r in rs if (r.get("sarf") or {}).get(t["no"]))
+        M.append(dict(kod=f"P{t['no']}", nom=f"{t['no']}-пул ({_dmy(t['sana'])}, биржа {t['birja_999']})", tur="pul",
+                      bosh=bosh, used=u, n=n, left=bosh - u, gbosh=None, gleft=None,
+                      g=sum((r.get("gramm") or 0) * (r["sarf"][t["no"]] / max(sum(r["sarf"].values()), 1e-9)) for r in rs if (r.get("sarf") or {}).get(t["no"])),
+                      izoh=("ой боши қолдиғи (Gavhar билан келишилган)" if D and t["no"] == pno else f"{_dmy(t['sana'])} да берилган пул")))
+    for f in fiks_stats(cfg):
+        if not f["faol"]:
+            continue
+        M.append(dict(kod="Ф" + f["oy"], nom=f"Возврат {f['nom']}", tur="fiks", bosh=f["summa"], used=f["used"], n=f["n"], left=f["left"],
+                      gbosh=f["gramm"], g=f["g"], gleft=f["gleft"],
+                      izoh="; ".join(f"{t['tur']} {t['used']:,.0f} $ ({t['n']} та)" for t in f["turlar"] if t["n"]) or "ҳали берилмаган"))
+    ort = [r for r in rs if tugagan(r)]
+    if ort:
+        M.append(dict(kod="ORT", nom="⚠ Возврат тугагандан кейин берилган", tur="ort", bosh=0.0, used=sum(r.get("fiks_ortiq") or 0 for r in ort),
+                      n=len(ort), left=-sum(r.get("fiks_ortiq") or 0 for r in ort), gbosh=None, gleft=None, g=sum(r.get("gramm") or 0 for r in ort),
+                      izoh="фиксация тугаган, пулдан ҳам айирилмади — Gavhar билан солиштиринг"))
+    yt = [r for r in rs if r.get("pul_yetmadi") and r.get("transh") != "возврат"]
+    # фактуралар
+    F = OrderedDict()
+    for r in sorted(rs, key=lambda r: (r.get("sana") or "", r.get("faktura") or "", r.get("filial") or "")):
+        k = (r.get("sana"), r.get("faktura"), r.get("filial"))
+        x = F.setdefault(k, dict(sana=k[0], faktura=k[1], filial=k[2], n=0, gramm=0.0, summa=0.0, man={}, xato_n=0, farq=0.0, yetmadi=0.0))
+        x["n"] += 1; x["gramm"] += r.get("gramm") or 0; x["summa"] += r.get("summa") or 0
+        if r.get("transh") == "возврат":
+            q = "Ф" + str(r.get("vozvrat_qism"))[1:] if str(r.get("vozvrat_qism") or "").startswith("Ф") else f"Q{r.get('vozvrat_qism') or 1}"
+            if tugagan(r):
+                x["man"][q] = x["man"].get(q, 0) + (r.get("fiks_ayir") or 0)
+                x["man"]["ORT"] = x["man"].get("ORT", 0) + (r.get("fiks_ortiq") or 0)
+            else:
+                x["man"][q] = x["man"].get(q, 0) + (r.get("summa") or 0)
+        for no_, c in (r.get("sarf") or {}).items():
+            x["man"][f"P{no_}"] = x["man"].get(f"P{no_}", 0) + c
+        if r.get("pul_yetmadi") and r.get("transh") != "возврат":
+            x["yetmadi"] += r.get("summa") or 0
+        if str(r.get("holat", "")).startswith("⚠"):
+            x["xato_n"] += 1; x["farq"] += r.get("farq") or 0
+    nomi = {m["kod"]: m["nom"] for m in M}
+    for x in F.values():
+        parts = [f"{nomi.get(k, k)}: {v:,.2f} $" for k, v in sorted(x["man"].items(), key=lambda kv: (kv[0][0] != "Ф", kv[0])) if abs(v) > 0.005]
+        if x["yetmadi"] > 0.005:
+            parts.append(f"пул етмади: {x['yetmadi']:,.2f} $")
+        if x["xato_n"]:
+            parts.append(f"❌ {x['xato_n']} та хато, фарқ {x['farq']:+,.2f} $")
+        x["izoh"] = " · ".join(parts)
+    return dict(sana=D, ob=ob, manbalar=M, yetmadi=dict(n=len(yt), summa=sum(r.get("summa") or 0 for r in yt)), fakturalar=list(F.values()),
+                jami=dict(n=len(rs), summa=sum(r.get("summa") or 0 for r in rs), gramm=sum(r.get("gramm") or 0 for r in rs),
+                          faktura=len(F)))
+
+
+def ob_hisob_matn(rows, cfg):
+    h = ob_hisob(rows, cfg)
+    L = [f"📌 {_dmy(h['sana']) + ' дан' if h['sana'] else 'Бошидан'} бери: {h['jami']['faktura']} та фактура, {h['jami']['n']} та товар, "
+         f"{h['jami']['summa']:,.2f} $ — шундан:"]
+    for m in h["manbalar"]:
+        if m["tur"] == "ort":
+            L.append(f"   {m['nom']}: {m['used']:,.2f} $ ({m['n']} та) — пулдан ҳам, возвратдан ҳам айирилмади, Gavhar билан солиштиринг")
+            continue
+        L.append(f"   {'💳' if m['tur'] == 'pul' else '↩️'} {m['nom']}: {m['used']:,.2f} $ ({m['n']} та) · бошида {m['bosh']:,.2f} · қолди {m['left']:,.2f} $"
+                 + (f" | грамм: {m['gbosh']:,.2f} дан берилди {m['g']:,.2f}, қолди {m['gleft']:,.2f} гр" if m.get("gbosh") is not None else ""))
+    if h["yetmadi"]["n"]:
+        L.append(f"   ⚠ пул етмади: {h['yetmadi']['summa']:,.2f} $ ({h['yetmadi']['n']} та)")
+    return L
+
+
+def vozvrat_yigma_matn(rows, cfg):
+    """/fiks матни охирига: возвратга кирмаганми ва нархи фарқли возвратлар."""
+    k, u = vozvrat_tekshir(rows, cfg)
+    L = []
+    if k:
+        L.append(f"🔎 Нархи возврат нархига яқин, лекин пулга/хатога тушган: {len(k)} та · {sum(r['summa'] or 0 for r, *_ in k):,.2f} $ "
+                 f"(Excel «Возвратга кирмаганми» варағи)")
+        g = OrderedDict()
+        for r, oy, nm, p in k:
+            x = g.setdefault((oy, nm), [0, 0.0]); x[0] += 1; x[1] += r["summa"] or 0
+        for (oy, nm), (n, s_) in g.items():
+            L.append(f"   • {oy_nom(oy)} «{nm}» нархига яқин: {n} та, {s_:,.2f} $")
+    if u:
+        L.append(f"⚠ Возвратдан айирилган, лекин 1 гр нархи фиксациядан фарқ қилади: {len(u)} та · {sum(r['summa'] or 0 for r, *_ in u):,.2f} $ "
+                 f"(Excel «Нархи фарқли возврат» варағи)")
+    return L
+
+
 def write_vozvrat_tovarlar(path, rows, cfg):
-    """Excel: ҳар возврат манбаи (2-қисм, сентябрь/октябрь фиксацияси …) — алоҳида варақ, товарма-товар."""
+    """ВОЗВРАТ ЙИҒМАСИ (Excel): фиксация ой × тур — берилган/қолган; фактуралар бўйича; возвратга кирмаганми;
+    нархи фарқли возвратлар; ҳар манба алоҳида варақда товарма-товар. rows — compute(cfg, …) натижаси (cfg шу ҳисобдан)."""
     import openpyxl
     from openpyxl.styles import Font, PatternFill
     wb = openpyxl.Workbook()
-    ws = wb.active; ws.title = "Хулоса"
     hd, fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F3864")
-    for j, c in enumerate(["Возврат манбаи", "Товар сони", "Грамм", "Сумма $", "Ўртача $/гр"], 1):
-        x = ws.cell(1, j, c); x.font = hd; x.fill = fill
-    T = vozvrat_tovarlar(rows)
-    for i, (q, rs) in enumerate(T.items(), 2):
-        gr, sm_ = sum(r["gramm"] or 0 for r in rs), sum(r["summa"] or 0 for r in rs)
-        for j, v in enumerate([("Возврат " + qism_nom(q)), len(rs), round(gr, 2), round(sm_, 2), round(sm_ / gr, 2) if gr else None], 1):
-            ws.cell(i, j, v)
-    ws.column_dimensions["A"].width = 34
+    B = Font(bold=True)
+    red, green = PatternFill("solid", fgColor="FADBD8"), PatternFill("solid", fgColor="D5F5E3")
+
+    def head(w, cols, widths=None, row=1):
+        for j, c in enumerate(cols, 1):
+            x = w.cell(row, j, c); x.font = hd; x.fill = fill
+        for j, wd in enumerate(widths or [], 1):
+            w.column_dimensions[openpyxl.utils.get_column_letter(j)].width = wd
+
+    ob = cfg.get("oy_boshi") or {}
+    obs = ob.get("sana") or ""
+    # ой бошидан олдинги возвратлар ой боши қолдиғига (Gavhar билан келишилган) кирган — йиғмада алоҳида
+    oldin = [r for r in rows if r.get("transh") == "возврат" and obs and (r.get("sana") or "") < obs]
+    T = vozvrat_tovarlar([r for r in rows if not obs or (r.get("sana") or "") >= obs])
+    # 1) ХУЛОСА: фиксация ой × тур
+    ws = wb.active; ws.title = "Хулоса"
+    ws.cell(1, 1, "ВОЗВРАТ ЙИҒМАСИ — ботдаги ҳамма фактуралар бўйича" + (f" (ой боши {_dmy(ob.get('sana'))} дан)" if ob.get("sana") else "")).font = Font(bold=True, size=13)
+    cols = ["Фиксация ойи", "Тур", "Фиксация сумма $", "Фиксация грамм", "Фиксация 1 гр $", "Берилди (сони)", "Берилди грамм",
+            "Берилди сумма $", "Ўртача 1 гр $", "Қолди сумма $", "Қолди грамм", "Тугагандан кейин ортиқча $", "Ҳолат"]
+    head(ws, cols, [14, 16, 15, 13, 12, 12, 13, 15, 12, 14, 12, 16, 40], row=3)
+    i = 4
+    for f in fiks_stats(cfg):
+        for t in f["turlar"]:
+            ql = t["left"]; qg = (t["gramm"] - t["g"]) if t.get("gramm") else None
+            fq = (t["tovar"] + (t.get("ortiq") or 0) - t["g"] * t["fiks_1gr"]) if t.get("fiks_1gr") and t["g"] else 0
+            h = ("⚠ ой тугаган, ортиқча берилган" if t.get("ortiq") else f"ℹ тур суммасидан {-ql:,.2f} $ кўп — ой жамисидан" if ql < -1
+                 else "✅ тугаган" if ql <= 1 else "🟢 қолди")
+            if t.get("oldi"):
+                h += "; ℹ " + ", ".join(f"«{k}» ҳисобидан {v:,.0f} $" for k, v in t["oldi"].items()) + " олинди"
+            if t.get("berdi"):
+                h += "; ℹ " + ", ".join(f"«{k}» учун {v:,.0f} $" for k, v in t["berdi"].items()) + " берилди"
+            if qg is not None and qg < -0.01:
+                h += f"; ℹ грамм {-qg:,.2f} гр ортиқ (тур алмашган)"
+            elif qg is not None and ql > 1 and qg > 0.01:
+                h += f"; қолган 1 гр = {ql / qg:,.2f} $"
+            elif qg is not None and ql > 1 and qg <= 0.01:
+                h += "; ⚠ грамм тугади, сумма қолди"
+            elif qg is not None and ql <= 1 and qg > 0.5:
+                h += f"; ⚠ сумма тугади, {qg:,.2f} гр қолди"
+            if fq > max(1.0, 0.3 * (t["g"] or 0)):
+                h += f"; ўртача фиксациядан қиммат (+{fq:,.2f} $)"
+            for j, v in enumerate([f["nom"], t["tur"], round(t["summa"], 2), t.get("gramm"), round(t["fiks_1gr"], 2) if t.get("fiks_1gr") else None,
+                                   t["n"], round(t["g"], 2), round(t["used"], 2), round(t["ort"], 2) if t.get("ort") else None, round(ql, 2),
+                                   round(qg, 2) if qg is not None else None, round(t.get("ortiq") or 0, 2), h], 1):
+                ws.cell(i, j, v)
+            ws.cell(i, 13).fill = red if t.get("ortiq") else green
+            i += 1
+        for j, v in [(1, f"{f['nom']} ЖАМИ"), (3, round(f["summa"], 2)), (4, round(f["gramm"], 2)), (6, f["n"]), (7, round(f["g"], 2)),
+                     (8, round(f["used"], 2)), (9, round(f["used"] / f["g"], 2) if f["g"] else None), (10, round(f["left"], 2)),
+                     (11, round(f["gleft"], 2)), (12, round(sum(t.get("ortiq") or 0 for t in f["turlar"]), 2)),
+                     (13, f"Gavhar: {f['summa']:,.2f} $ ва {f['gramm']:,.2f} гр — берилди {f['used']:,.2f} $ / {f['g']:,.2f} гр, "
+                          f"қолди {f['left']:,.2f} $ / {f['gleft']:,.2f} гр")]:
+            ws.cell(i, j, v).font = B
+        i += 2
+    # бошқа манбалар (1-қисм рўйхат, 2-қисм)
+    bosh = [(q, rs) for q, rs in T.items() if not str(q).startswith("Ф")]
+    if bosh:
+        ws.cell(i, 1, "Бошқа возврат манбалари").font = B; i += 1
+        for q, rs in bosh:
+            ws.cell(i, 1, qism_nom(q)); ws.cell(i, 6, len(rs)); ws.cell(i, 7, round(sum(r["gramm"] or 0 for r in rs), 2))
+            ws.cell(i, 8, round(sum(r["summa"] or 0 for r in rs), 2)); i += 1
+    if oldin:
+        ws.cell(i, 1, f"{_dmy(obs)} гача берилган возврат: {len(oldin)} та, {sum(r['gramm'] or 0 for r in oldin):,.2f} гр, "
+                      f"{sum(r['summa'] or 0 for r in oldin):,.2f} $ — Gavhar билан келишилган ой боши қолдиғига кирган, бу ҳисобга қўшилмайди."); i += 1
+    k, u = vozvrat_tekshir(rows, cfg)
+    i += 1
+    ws.cell(i, 1, "ТЕКШИРИНГ").font = B; i += 1
+    ws.cell(i, 1, f"Нархи возврат нархига яқин, лекин пулга/хатога тушган: {len(k)} та, {sum(r['summa'] or 0 for r, *_ in k):,.2f} $ → «Возвратга кирмаганми» варағи"); i += 1
+    ws.cell(i, 1, f"Возвратдан айирилган, лекин 1 гр нархи фиксациядан фарқли: {len(u)} та, {sum(r['summa'] or 0 for r, *_ in u):,.2f} $ → «Нархи фарқли возврат» варағи")
+    ws.freeze_panes = "A4"
+
+    # 1б) ОЙ БОШИДАН БЕРИ — пуллар ва возвратлардан қанча; ҳар фактура изоҳи билан
+    h = ob_hisob(rows, cfg)
+    w = wb.create_sheet("Ой бошидан", 0)
+    w.cell(1, 1, f"ОЙ БОШИДАН БЕРИ ({_dmy(h['sana']) + ' дан' if h['sana'] else 'бошидан'}): {h['jami']['faktura']} та фактура, "
+                 f"{h['jami']['n']} та товар, {h['jami']['gramm']:,.2f} гр, {h['jami']['summa']:,.2f} $").font = Font(bold=True, size=13)
+    if h["ob"].get("jami"):
+        w.cell(2, 1, f"Ой боши: Gavhar да жами {h['ob']['jami']:,.2f} $ = пул {float(h['ob'].get('pul') or 0):,.2f} + возврат {float(h['ob'].get('vozvrat') or 0):,.2f} "
+                     f"({h['ob'].get('vozvrat_matn') or ''})")
+    head(w, ["Манба", "Бошида $", "Ишлатилди $", "Товар сони", "Қолди $", "Бошида гр", "Берилди гр", "Қолди гр", "Изоҳ"],
+         [44, 15, 15, 11, 15, 13, 13, 13, 90], row=4)
+    i = 5
+    for m in h["manbalar"]:
+        for j, v in enumerate([("💳 " if m["tur"] == "pul" else "" if m["tur"] == "ort" else "↩️ ") + m["nom"], round(m["bosh"], 2), round(m["used"], 2), m["n"], round(m["left"], 2),
+                               round(m["gbosh"], 2) if m.get("gbosh") is not None else None, round(m.get("g") or 0, 2),
+                               round(m["gleft"], 2) if m.get("gleft") is not None else None, m["izoh"]], 1):
+            w.cell(i, j, v)
+        i += 1
+    if h["yetmadi"]["n"]:
+        w.cell(i, 1, "⚠ Пул етмади (ҳеч бир пулдан айирилмади)"); w.cell(i, 3, round(h["yetmadi"]["summa"], 2)); w.cell(i, 4, h["yetmadi"]["n"]); i += 1
+    for j, v in [(1, "ЖАМИ"), (2, round(sum(m["bosh"] for m in h["manbalar"]), 2)), (3, round(sum(m["used"] for m in h["manbalar"]) + h["yetmadi"]["summa"], 2)),
+                 (4, sum(m["n"] for m in h["manbalar"]) + h["yetmadi"]["n"]), (5, round(sum(m["left"] for m in h["manbalar"]), 2)),
+                 (7, round(sum(m.get("g") or 0 for m in h["manbalar"]), 2))]:
+        w.cell(i, j, v).font = B
+    # 🎯 НАЗОРАТ НУҚТАСИ: ой бўйича жами сумма ва жами грамм (тош турлари алмашса ҳам майли)
+    NZ = {x["oy"]: x for x in fiks_nazorat(rows, cfg)}
+    i += 2
+    w.cell(i, 1, "🎯 НАЗОРАТ НУҚТАСИ — возврат: Gavhar айтган жами сумма ва грамм ↔ берилган товар (тош турлари алмашса ҳам майли)").font = Font(bold=True, size=12)
+    i += 1
+    head(w, ["Ой", "Gavhar сумма $", "Берилди $", "Товар сони", "Қолди $", "Gavhar грамм", "Берилди гр", "Қолди гр", "Хулоса", "Нарх фарқи $"], row=i)
+    for x in NZ.values():
+        i += 1
+        for j, v in enumerate([x["nom"], round(x["f_summa"], 2), round(x["summa"], 2), x["n"], round(x["q_summa"], 2), round(x["f_gramm"], 2),
+                               round(x["gramm"], 2), round(x["q_gramm"], 2), x["holat"], round(x["narx_farq"], 2)], 1):
+            w.cell(i, j, v).font = B
+        w.cell(i, 9).fill = red if x["holat"].startswith("⚠") else green
+    i += 1
+    w.cell(i, 1, "Нарх фарқи — берилган товар суммаси ўз тош тури фиксация нархидан қанча фарқ қилгани (+ қиммат, − арзон). "
+                 "Якунда «Қолди $» ва «Қолди гр» иккаласи 0 бўлиши керак.").font = Font(italic=True, color="666666")
+    # тош тури бўйича — маълумот учун
+    i += 2
+    w.cell(i, 1, "Тош тури бўйича (маълумот учун — Gavhar турларни алмаштириши мумкин, асосийси юқоридаги ой жамиси)").font = Font(bold=True, size=12)
+    i += 1
+    head(w, ["Ой · тур", "Gavhar сумма $", "Берилди $", "Товар сони", "Қолди $", "Gavhar грамм", "Берилди гр", "Қолди гр", "Текширув"], row=i)
+    for f in fiks_stats(cfg):
+        if not f["faol"]:
+            continue
+        warn_ = []
+        for t in f["turlar"] + [dict(tur="ЖАМИ", summa=f["summa"], used=f["used"], n=f["n"], left=f["left"], gramm=f["gramm"], g=f["g"], jami=True,
+                                     ortiq=sum(x.get("ortiq") or 0 for x in f["turlar"]))]:
+            i += 1
+            qg = (t["gramm"] - t["g"]) if t.get("gramm") else None
+            ql = t["summa"] - t["used"] - (t.get("ortiq") or 0)
+            if qg is None:
+                tx = "грамм берилмаган"
+            elif ql < -1 and not t.get("jami") and not (t.get("ortiq") or 0) > 0.5:
+                tx = (f"ℹ тур суммасидан {-ql:,.2f} $ кўп берилди — {f['nom']} жамисидан қопланди"
+                      + (f"; грамм {-qg:,.2f} гр ортиқ" if qg < -0.01 else f"; грамм {qg:,.2f} қолди"))
+            elif t.get("oldi") and ql >= -1 and not (t.get("ortiq") or 0) > 0.5:
+                tx = "✅ тур суммаси тугади — қолгани шу ойнинг бошқа тури ҳисобидан" + (f" (грамм {-qg:,.2f} гр ортиқ)" if qg < -0.01 else "")
+            elif ql < -1 or qg < -0.01:
+                tx = "⚠ ортиқча берилган: " + ", ".join(x for x in [f"{-ql:,.2f} $" if ql < -1 else "", f"{-qg:,.2f} гр" if qg < -0.01 else ""] if x)
+            elif ql <= 1 and qg <= 0.5:
+                tx = "✅ тўлиқ берилди — сумма ва грамм мос"
+            elif ql <= 1:
+                tx = f"⚠ сумма тугади, лекин {qg:,.2f} гр қолди — Gavhar 1 гр ни қимматроқ берган"
+            elif qg <= 0.01:
+                tx = f"⚠ грамм тугади, лекин {ql:,.2f} $ қолди — Gavhar 1 гр ни арзонроқ берган"
+            else:
+                fp = t["summa"] / t["gramm"]
+                tx = f"🟢 қолди {ql:,.2f} $ / {qg:,.2f} гр (1 гр {ql / qg:,.2f}, фиксацияда {fp:,.2f})"
+            if t.get("oldi"):
+                tx += " · ℹ тур тугаб, " + ", ".join(f"«{k}» ҳисобидан {v:,.2f} $" for k, v in t["oldi"].items()) + " берилди"
+            if t.get("berdi"):
+                tx += " · ℹ шундан " + ", ".join(f"«{k}» учун {v:,.2f} $" for k, v in t["berdi"].items()) + " ишлатилди"
+            if t.get("jami"):
+                tx = (NZ.get(f["oy"]) or {}).get("holat", tx)
+            elif tx.startswith("⚠") and not (t.get("ortiq") or 0) > 0.5:
+                tx = "ℹ" + tx[1:]  # тур даражасида — маълумот; назорат ой жамиси бўйича
+            for j, v in enumerate([f"{f['nom']} · {t['tur']}", round(t["summa"], 2), round(t["used"] + (t.get("ortiq") or 0), 2), t["n"], round(ql, 2),
+                                   round(t["gramm"], 2) if t.get("gramm") else None, round(t["g"], 2), round(qg, 2) if qg is not None else None, tx], 1):
+                c_ = w.cell(i, j, v)
+                if t.get("jami"):
+                    c_.font = B
+            w.cell(i, 9).fill = red if tx.startswith("⚠") else green if tx.startswith(("✅", "🟢")) else PatternFill()
+    i += 1
+    w.cell(i, 1, "«Ишлатилди» — пулдан айирилган тўғри қиймат (Gavhar қиммат ёзган бўлса — ортиқчаси хато бўлиб талаб қилинади), возвратдан — фактура суммаси.").font = Font(italic=True, color="666666")
+    i += 2
+    kods = [m["kod"] for m in h["manbalar"]]
+    cols = ["Сана", "Фактура", "Дўкон", "Товар сони", "Грамм", "Фактура $"] + [m["nom"] for m in h["manbalar"]] + ["Пул етмади $", "Хато сони", "Хато фарқ $", "Изоҳ"]
+    head(w, cols, row=i)
+    for j in range(7, 7 + len(kods)):
+        w.column_dimensions[openpyxl.utils.get_column_letter(j)].width = 18
+    hr = i
+    for x in h["fakturalar"]:
+        i += 1
+        vals = [x["sana"], x["faktura"], x["filial"], x["n"], round(x["gramm"], 2), round(x["summa"], 2)] + \
+               [round(x["man"].get(k, 0), 2) or None for k in kods] + [round(x["yetmadi"], 2) or None, x["xato_n"] or None, round(x["farq"], 2) or None, x["izoh"]]
+        for j, v in enumerate(vals, 1):
+            w.cell(i, j, v)
+        if x["xato_n"]:
+            w.cell(i, len(vals)).fill = red
+    i += 1
+    w.cell(i, 1, "ЖАМИ").font = B
+    for j in range(4, 4 + 3 + len(kods) + 3):
+        col = openpyxl.utils.get_column_letter(j)
+        if hr + 1 <= i - 1:
+            w.cell(i, j, f"=SUM({col}{hr + 1}:{col}{i - 1})").font = B
+    w.freeze_panes = w.cell(hr + 1, 4)
+    w.auto_filter.ref = f"A{hr}:{openpyxl.utils.get_column_letter(len(cols))}{max(hr, i - 1)}"
+
+    # 2) ФАКТУРАЛАР БЎЙИЧА
+    w = wb.create_sheet("Фактуралар бўйича")
+    head(w, ["Сана", "Фактура", "Филиал", "Манба", "Тур", "Сони", "Грамм", "Сумма $"], [11, 15, 20, 22, 16, 7, 9, 12])
+    G = OrderedDict()
+    for q, rs in T.items():
+        for r in rs:
+            tn = "Браслет/Занжир" if fiks_tur(r) == "Браслет" else fiks_tur(r)
+            x = G.setdefault((r.get("sana") or "", r.get("faktura") or "", r.get("filial") or "", qism_nom(q), tn), [0, 0.0, 0.0])
+            x[0] += 1; x[1] += r["gramm"] or 0; x[2] += r["summa"] or 0
+    i = 2
+    for (sa, fk, fi, mn, tn), (n, gr, sm_) in sorted(G.items()):
+        for j, v in enumerate([sa, fk, fi, mn, tn, n, round(gr, 2), round(sm_, 2)], 1):
+            w.cell(i, j, v)
+        i += 1
+    w.cell(i, 1, "ЖАМИ").font = B
+    w.cell(i, 6, sum(v[0] for v in G.values())).font = B
+    w.cell(i, 7, round(sum(v[1] for v in G.values()), 2)).font = B
+    w.cell(i, 8, round(sum(v[2] for v in G.values()), 2)).font = B
+    w.freeze_panes = "A2"; w.auto_filter.ref = f"A1:H{max(1, i - 1)}"
+
+    # 3) ВОЗВРАТГА КИРМАГАНМИ
+    w = wb.create_sheet("Возвратга кирмаганми")
+    head(w, ["Сана", "Фактура", "Филиал", "Артикул", "Товар номи", "Грамм", "1 гр $", "Сумма $", "Яқин фиксация", "Фиксация 1 гр $",
+             "Ботда қаерга тушган", "Ҳолат", "Изоҳ"], [11, 15, 18, 10, 48, 8, 8, 10, 24, 10, 14, 14, 70])
+    for i, (r, oy, nm, p) in enumerate(sorted(k, key=lambda z: (z[0].get("sana") or "", z[0].get("faktura") or "")), 2):
+        for j, v in enumerate([r.get("sana"), r.get("faktura"), r.get("filial"), r.get("kod"), r.get("nomi"), round(r["gramm"] or 0, 2),
+                               round(r["fakt_1gr"], 2), round(r["summa"] or 0, 2), f"{oy_nom(oy)} «{nm}»", round(p, 2),
+                               r.get("transh"), r.get("holat"), r.get("izoh")], 1):
+            w.cell(i, j, v)
+    w.freeze_panes = "A2"; w.auto_filter.ref = f"A1:M{len(k) + 1}"
+
+    # 4) НАРХИ ФАРҚЛИ ВОЗВРАТ
+    w = wb.create_sheet("Нархи фарқли возврат")
+    head(w, ["Сана", "Фактура", "Филиал", "Артикул", "Товар номи", "Грамм", "1 гр $", "Сумма $", "Фиксация", "Фиксация 1 гр $", "Фарқ $/гр", "Ҳолат"],
+         [11, 15, 18, 10, 48, 8, 8, 10, 16, 10, 9, 18])
+    for i, (r, oy, p) in enumerate(sorted(u, key=lambda z: -abs(z[0]["fakt_1gr"] - z[2])), 2):
+        for j, v in enumerate([r.get("sana"), r.get("faktura"), r.get("filial"), r.get("kod"), r.get("nomi"), round(r["gramm"] or 0, 2),
+                               round(r["fakt_1gr"], 2), round(r["summa"] or 0, 2), oy_nom(oy), round(p, 2), round(r["fakt_1gr"] - p, 2), r.get("holat")], 1):
+            w.cell(i, j, v)
+    w.freeze_panes = "A2"; w.auto_filter.ref = f"A1:L{len(u) + 1}"
+
+    # 5) ҲАР МАНБА — товарма-товар
     for q, rs in T.items():
         w = wb.create_sheet(re.sub(r"[\\/*?:\[\]]", "", qism_nom(q))[:30])
-        cols = ["Сана", "Фактура", "Филиал", "Артикул", "Модель", "Тур", "Товар номи", "Грамм", "1 гр $", "Сумма $", "Изоҳ"]
-        for j, c in enumerate(cols, 1):
-            x = w.cell(1, j, c); x.font = hd; x.fill = fill
+        cols = ["Сана", "Фактура", "Филиал", "Артикул", "Модель", "Тур", "Товар номи", "Грамм", "1 гр $", "Сумма $", "Ҳолат", "Изоҳ"]
+        head(w, cols, [11, 15, 20, 11, 12, 14, 50, 8, 8, 11, 16, 60])
         for i, r in enumerate(rs, 2):
-            for j, v in enumerate([r.get("sana"), r.get("faktura"), r.get("filial"), r.get("kod"), model_of(r.get("nomi")), r.get("tur"), r.get("nomi"),
-                                   round(r["gramm"] or 0, 2), round(r.get("fakt_1gr") or 0, 2), round(r["summa"] or 0, 2), r.get("vozvrat_manba")], 1):
+            for j, v in enumerate([r.get("sana"), r.get("faktura"), r.get("filial"), r.get("kod"), model_of(r.get("nomi")),
+                                   "Браслет/Занжир" if fiks_tur(r) == "Браслет" else fiks_tur(r), r.get("nomi"),
+                                   round(r["gramm"] or 0, 2), round(r.get("fakt_1gr") or 0, 2), round(r["summa"] or 0, 2), r.get("holat"), r.get("vozvrat_manba")], 1):
                 w.cell(i, j, v)
         n = len(rs) + 2
-        w.cell(n, 1, "ЖАМИ").font = Font(bold=True)
-        w.cell(n, 8, round(sum(r["gramm"] or 0 for r in rs), 2)).font = Font(bold=True)
-        w.cell(n, 10, round(sum(r["summa"] or 0 for r in rs), 2)).font = Font(bold=True)
-        for j, wd in enumerate([11, 15, 20, 11, 12, 11, 50, 8, 8, 11, 60], 1):
-            w.column_dimensions[openpyxl.utils.get_column_letter(j)].width = wd
-        w.freeze_panes = "A2"; w.auto_filter.ref = f"A1:K{len(rs) + 1}"
+        w.cell(n, 1, "ЖАМИ").font = B
+        w.cell(n, 8, round(sum(r["gramm"] or 0 for r in rs), 2)).font = B
+        w.cell(n, 10, round(sum(r["summa"] or 0 for r in rs), 2)).font = B
+        w.freeze_panes = "A2"; w.auto_filter.ref = f"A1:L{len(rs) + 1}"
     wb.save(path)
     return {q: len(rs) for q, rs in T.items()}
 
@@ -2768,6 +3242,174 @@ def kirim_matn(res):
             L.append(f"   • … яна {len(g) - 15} та (Excel да)")
         L.append("   Бу фактураларни Gavhar дан олиб, ботга ташланг — шунда пулдан айирилади ва нархи текширилади.")
     return L
+
+
+def manba_of(r):
+    """Товар қаердан айирилган: «2-пул», «возврат фиксация сентябр 2026», «пул етмади» …"""
+    if r.get("transh") == "возврат":
+        return "Возврат " + qism_nom(r.get("vozvrat_qism") or 1)
+    sf = {k: v for k, v in (r.get("sarf") or {}).items() if abs(v) > 0.005}
+    if sf:
+        return " + ".join(f"{k}-пул" for k in sf)
+    if r.get("pul_yetmadi"):
+        return "Пул етмади"
+    return r.get("transh") or "—"
+
+
+def write_oylik_tovar(path, rows, cfg, oy=None):
+    """ОЙЛАР БЎЙИЧА БЕРИЛГАН ЮК (Excel): ҳар ой — жами, қайси пулдан ва возвратдан; ой × тур; ой × дўкон; ҳар ой товарма-товар.
+    oy — фақат шу ой (2026-11), бўлмаса ҳамма ойлар."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+    hd, fill, B = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F3864"), Font(bold=True)
+    red = PatternFill("solid", fgColor="FADBD8")
+    rs = [r for r in rows if r.get("sana") and (not oy or r["sana"][:7] == oy)]
+    oylar = sorted({r["sana"][:7] for r in rs})
+    pk = sorted({k for r in rs for k in (r.get("sarf") or {})})
+    vk = sorted({str(r.get("vozvrat_qism") or 1) for r in rs if r.get("transh") == "возврат"}, key=lambda q: (q[0] != "Ф", q))
+    vnom = lambda q: "Возврат " + qism_nom(q if q.startswith("Ф") else int(q))
+    bad = lambda r: str(r.get("holat", "")).startswith("⚠")
+    wb = openpyxl.Workbook()
+
+    def head(w, cols, widths=None, row=1):
+        for j, c in enumerate(cols, 1):
+            x = w.cell(row, j, c); x.font = hd; x.fill = fill
+        for j, wd in enumerate(widths or [], 1):
+            w.column_dimensions[openpyxl.utils.get_column_letter(j)].width = wd
+
+    # 1) ОЙЛАР
+    ws = wb.active; ws.title = "Ойлар"
+    cols = (["Ой", "Фактура", "Дўкон", "Товар сони", "Грамм", "Жами $"] + [f"{k}-пулдан $" for k in pk] + [vnom(q) + " $" for q in vk]
+            + ["Пул етмади $", "Хато сони", "Қиммат ёзилган $", "Арзон ёзилган $", "Изоҳ"])
+    head(ws, cols, [16, 9, 8, 10, 11, 14] + [14] * (len(pk) + len(vk)) + [12, 9, 14, 14, 90])
+    for i, o in enumerate(oylar, 2):
+        x = [r for r in rs if r["sana"][:7] == o]
+        pv = [sum((r.get("sarf") or {}).get(k, 0) for r in x) for k in pk]
+        vv = [sum(r.get("summa") or 0 for r in x if r.get("transh") == "возврат" and str(r.get("vozvrat_qism") or 1) == q) for q in vk]
+        yt = sum(r.get("summa") or 0 for r in x if r.get("pul_yetmadi") and r.get("transh") != "возврат")
+        qm = sum(r.get("farq") or 0 for r in x if bad(r) and (r.get("farq") or 0) > 0)
+        az = sum(r.get("farq") or 0 for r in x if bad(r) and (r.get("farq") or 0) < 0)
+        iz = " · ".join([f"{k}-пулдан {v:,.2f} $" for k, v in zip(pk, pv) if abs(v) > 0.005] + [f"{vnom(q)}: {v:,.2f} $" for q, v in zip(vk, vv) if v]
+                        + ([f"пул етмади {yt:,.2f} $"] if yt > 0.005 else []) + ([f"❌ {sum(1 for r in x if bad(r))} та хато"] if any(bad(r) for r in x) else []))
+        vals = ([f"{OYLAR[int(o[5:7])]} {o[:4]}", len({(r.get('faktura'), r.get('filial'), r['sana']) for r in x}), len({r.get('filial') for r in x}), len(x),
+                 round(sum(r.get("gramm") or 0 for r in x), 2), round(sum(r.get("summa") or 0 for r in x), 2)]
+                + [round(v, 2) or None for v in pv] + [round(v, 2) or None for v in vv]
+                + [round(yt, 2) or None, sum(1 for r in x if bad(r)) or None, round(qm, 2) or None, round(az, 2) or None, iz])
+        for j, v in enumerate(vals, 1):
+            ws.cell(i, j, v)
+    n = len(oylar) + 2
+    ws.cell(n, 1, "ЖАМИ").font = B
+    for j in range(2, len(cols)):
+        if j in (2, 3):
+            continue
+        c = openpyxl.utils.get_column_letter(j)
+        ws.cell(n, j, f"=SUM({c}2:{c}{n - 1})").font = B
+    ws.cell(n + 1, 1, "Пулдан — пулдан айирилган тўғри қиймат (Gavhar қиммат ёзса ортиқчаси «Қиммат ёзилган» устунида). Возвратдан — фактура суммаси.").font = Font(italic=True, color="666666")
+    ws.freeze_panes = "B2"
+
+    # 2) ОЙ × ТУР
+    w = wb.create_sheet("Ой × тур")
+    head(w, ["Ой", "Тур", "Товар сони", "Грамм", "Жами $", "Пулдан $", "Возвратдан $", "Хато сони", "Ўртача 1 гр $"], [16, 16, 10, 11, 14, 14, 14, 9, 12])
+    i = 1
+    for o in oylar:
+        G = OrderedDict()
+        for r in rs:
+            if r["sana"][:7] != o:
+                continue
+            g = G.setdefault(r.get("tur") or "—", [0, 0.0, 0.0, 0.0, 0.0, 0])
+            g[0] += 1; g[1] += r.get("gramm") or 0; g[2] += r.get("summa") or 0
+            g[3] += sum((r.get("sarf") or {}).values()); g[4] += (r.get("summa") or 0) if r.get("transh") == "возврат" else 0
+            g[5] += 1 if bad(r) else 0
+        for t, g in sorted(G.items(), key=lambda kv: -kv[1][2]):
+            i += 1
+            for j, v in enumerate([f"{OYLAR[int(o[5:7])]} {o[:4]}", t, g[0], round(g[1], 2), round(g[2], 2), round(g[3], 2), round(g[4], 2), g[5] or None,
+                                   round(g[2] / g[1], 2) if g[1] else None], 1):
+                w.cell(i, j, v)
+    w.freeze_panes = "C2"; w.auto_filter.ref = f"A1:I{max(1, i)}"
+
+    # 3) ОЙ × ДЎКОН
+    w = wb.create_sheet("Ой × дўкон")
+    head(w, ["Ой", "Дўкон", "Фактура", "Товар сони", "Грамм", "Жами $", "Пулдан $", "Возвратдан $", "Хато сони", "Хато фарқ $"], [16, 24, 9, 10, 11, 14, 14, 14, 9, 12])
+    i = 1
+    for o in oylar:
+        G = OrderedDict()
+        for r in rs:
+            if r["sana"][:7] != o:
+                continue
+            g = G.setdefault(r.get("filial") or "—", [set(), 0, 0.0, 0.0, 0.0, 0.0, 0, 0.0])
+            g[0].add((r.get("faktura"), r["sana"])); g[1] += 1; g[2] += r.get("gramm") or 0; g[3] += r.get("summa") or 0
+            g[4] += sum((r.get("sarf") or {}).values()); g[5] += (r.get("summa") or 0) if r.get("transh") == "возврат" else 0
+            if bad(r):
+                g[6] += 1; g[7] += r.get("farq") or 0
+        for f_, g in sorted(G.items(), key=lambda kv: -kv[1][3]):
+            i += 1
+            for j, v in enumerate([f"{OYLAR[int(o[5:7])]} {o[:4]}", f_, len(g[0]), g[1], round(g[2], 2), round(g[3], 2), round(g[4], 2), round(g[5], 2),
+                                   g[6] or None, round(g[7], 2) or None], 1):
+                w.cell(i, j, v)
+            if g[6]:
+                w.cell(i, 9).fill = red
+    w.freeze_panes = "C2"; w.auto_filter.ref = f"A1:J{max(1, i)}"
+
+    # 3б) ОЙ × ВОЗВРАТ — шу ойда возвратдан берилган товар: қайси фиксация (ой) ва тур бўйича
+    w = wb.create_sheet("Ой × возврат", 1)
+    head(w, ["Ой", "Қайси возврат", "Тур", "Товар сони", "Грамм", "Сумма $", "Ўртача 1 гр $", "Фиксация 1 гр $", "Изоҳ"], [16, 30, 16, 10, 11, 14, 12, 13, 70])
+    fp = {}
+    for f in fiks_list(cfg):
+        for c_, x_ in f["turlar"].items():
+            if x_.get("gramm"):
+                fp[("Ф" + f["oy"], c_)] = x_["summa"] / x_["gramm"]
+    i = 1
+    for o in oylar:
+        G = OrderedDict()
+        for r in rs:
+            if r["sana"][:7] != o or r.get("transh") != "возврат":
+                continue
+            q = str(r.get("vozvrat_qism") or 1)
+            ft = FIKS_MAP.get(fiks_tur(r), [fiks_tur(r)])[0]  # фиксация сегменти (Ван Клиф → Дорика, кўзсиз → Вакс)
+            k = (q, ft, tugagan(r))
+            g = G.setdefault(k, [0, 0.0, 0.0, 0.0])
+            g[0] += 1; g[1] += r.get("gramm") or 0; g[2] += r.get("summa") or 0; g[3] += r.get("fiks_ortiq") or 0
+        jn, jg, js = 0, 0.0, 0.0
+        for (q, ft, tg_), g in sorted(G.items(), key=lambda kv: (kv[0][0][0] != "Ф", kv[0][0], kv[0][2], -kv[1][2])):
+            i += 1
+            nm = "Браслет/Занжир" if ft == "Браслет" else ft
+            p_ = fp.get((q, ft))
+            iz = (f"⚠ фиксация тугагандан кейин берилган: {g[3]:,.2f} $ ортиқча — пулдан ҳам айирилмади" if tg_
+                  else ("✅ фиксация нархига мос" if p_ and abs(g[2] / g[1] - p_) <= 0.3 else f"ўртача фиксациядан {g[2] / g[1] - p_:+.2f} $/гр") if p_ and g[1] else "")
+            for j, v in enumerate([f"{OYLAR[int(o[5:7])]} {o[:4]}", vnom(q), nm, g[0], round(g[1], 2), round(g[2], 2),
+                                   round(g[2] / g[1], 2) if g[1] else None, round(p_, 2) if p_ else None, iz], 1):
+                w.cell(i, j, v)
+            if tg_:
+                w.cell(i, 9).fill = red
+            jn += g[0]; jg += g[1]; js += g[2]
+        if G:
+            i += 1
+            for j, v in [(1, f"{OYLAR[int(o[5:7])]} {o[:4]} ЖАМИ"), (4, jn), (5, round(jg, 2)), (6, round(js, 2)), (7, round(js / jg, 2) if jg else None)]:
+                w.cell(i, j, v).font = B
+            i += 1
+    w.freeze_panes = "D2"; w.auto_filter.ref = f"A1:I{max(1, i)}"
+
+    # 4) ҲАР ОЙ — товарма-товар
+    for k_, o in enumerate(oylar):
+        w = wb.create_sheet(f"Приход {OYLAR[int(o[5:7])]} {o[:4]}"[:30], 1 + k_)
+        cols = ["Сана", "Фактура", "Дўкон", "Артикул", "Модель", "Категория", "Тур", "Грамм", "1 гр $", "Сумма $", "Қаердан айирилди", "Тўғри 1 гр $", "Фарқ $", "Ҳолат", "Изоҳ"]
+        head(w, cols, [11, 15, 18, 10, 12, 14, 12, 8, 8, 11, 30, 10, 9, 16, 70])
+        x = sorted([r for r in rs if r["sana"][:7] == o], key=lambda r: (r["sana"], r.get("faktura") or "", r.get("filial") or ""))
+        for i, r in enumerate(x, 2):
+            for j, v in enumerate([r["sana"], r.get("faktura"), r.get("filial"), r.get("kod"), model_of(r.get("nomi")), r.get("kategoriya"), r.get("tur"),
+                                   round(r.get("gramm") or 0, 2), round(r["fakt_1gr"], 2) if r.get("fakt_1gr") else None, round(r.get("summa") or 0, 2),
+                                   manba_of(r), round(r["hisob_1gr"], 2) if r.get("hisob_1gr") else None,
+                                   round(r["farq"], 2) if bad(r) and r.get("farq") else None, r.get("holat"), r.get("vozvrat_manba") or r.get("izoh")], 1):
+                w.cell(i, j, v)
+            if bad(r):
+                w.cell(i, 14).fill = red
+        n = len(x) + 2
+        w.cell(n, 1, "ЖАМИ").font = B
+        w.cell(n, 8, f"=SUM(H2:H{n - 1})").font = B
+        w.cell(n, 10, f"=SUM(J2:J{n - 1})").font = B
+        w.freeze_panes = "A2"; w.auto_filter.ref = f"A1:O{max(1, n - 1)}"
+    wb.save(path)
+    return oylar
 
 
 def write_kirim_report(path, res):

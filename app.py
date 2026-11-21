@@ -65,7 +65,7 @@ PERM_MAP = {("GET", "/api/holat"): "holat", ("GET", "/api/fakturalar"): "faktura
             ("POST", "/api/transh"): "transh_qoshish", ("POST", "/api/transh/yop"): "transh_qoshish",
             ("POST", "/api/chegara"): "transh_qoshish", ("POST", "/api/vozvrat/yop"): "transh_qoshish", ("POST", "/api/transh/faol"): "transh_qoshish", ("POST", "/api/transh/ochir"): "transh_qoshish",
             ("POST", "/api/transh/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/faol"): "transh_qoshish",
-            ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("POST", "/api/fiks"): "vozvrat_yuklash", ("GET", "/api/vozvrat/tovarlar"): "transhlar", ("POST", "/api/vozvrat/excel"): "hisobot", ("POST", "/api/fiks/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/ochir"): "transh_qoshish", ("POST", "/api/fiks/faol"): "vozvrat_yuklash", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/seriya"): "transh_qoshish", ("POST", "/api/qqs"): "transh_qoshish", ("POST", "/api/qqs/metall"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
+            ("POST", "/api/vozvrat/qism"): "transh_qoshish", ("POST", "/api/fiks"): "vozvrat_yuklash", ("GET", "/api/vozvrat/tovarlar"): "transhlar", ("POST", "/api/vozvrat/excel"): "hisobot", ("POST", "/api/oylar/excel"): "hisobot", ("POST", "/api/fiks/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/tahrir"): "transh_qoshish", ("POST", "/api/vozvrat/ochir"): "transh_qoshish", ("POST", "/api/fiks/faol"): "vozvrat_yuklash", ("GET", "/api/sozlama"): "transhlar", ("POST", "/api/seriya"): "transh_qoshish", ("POST", "/api/qqs"): "transh_qoshish", ("POST", "/api/qqs/metall"): "transh_qoshish", ("POST", "/api/hisobot"): "hisobot",
             ("POST", "/api/xatolar/excel"): "hisobot", ("POST", "/api/faktura/excel"): "hisobot"}
 
 
@@ -95,6 +95,7 @@ def state():
     st["qismlar"] = [q for q in N.qism_stats(cfg) if q.get("faol") is not False and not (cfg.get("oy_boshi") or {}).get("sana")]
     st["vozvrat"]["yopilgan"] = (cfg.get("vozvrat_1") or {}).get("yopilgan_sana")
     st["fiks"] = [f for f in N.fiks_stats(cfg) if f["faol"]]
+    st["nazorat"] = N.fiks_nazorat(rows, cfg)
     return cfg, rows, trs, st
 
 
@@ -108,7 +109,7 @@ def row_json(r):
                 fakt_1gr=r2(r.get("fakt_1gr")), hisob_1gr=r2(r.get("hisob_1gr")), farq_gr=r2(r.get("farq_gr")),
                 farq=r2(r.get("farq")), holat=r.get("holat"), izoh=r.get("izoh"), transh=r.get("transh"),
                 natija=r.get("natija"), asos=r.get("asos"), xato_turi=r.get("xato_turi"),
-                vozvrat_qism=r.get("vozvrat_qism"), vozvrat_manba=r.get("vozvrat_manba"))
+                vozvrat_qism=r.get("vozvrat_qism"), vozvrat_manba=r.get("vozvrat_manba"), fiks_ortiq=r2(r.get("fiks_ortiq")))
 
 
 def sana_transh(cfg, sana):
@@ -288,7 +289,9 @@ async def api_holat(request):
         vozvrat={k: r2(v) if isinstance(v, float) else v for k, v in s["vozvrat"].items()},
         qismlar=[{k: (r2(v) if isinstance(v, float) else v) for k, v in q.items() if k != "narxlar"} for q in s.get("qismlar", [])],
         fiks=[dict(oy=f["oy"], nom=f["nom"], summa=r2(f["summa"]), used=r2(f["used"]), left=r2(f["left"]), n=f["n"],
+                   gramm=r2(f.get("gramm")), g=r2(f.get("g")), gleft=r2(f.get("gleft")),
                    turlar=[{k: (r2(v) if isinstance(v, float) else v) for k, v in t.items()} for t in f["turlar"]]) for f in s.get("fiks", [])],
+        nazorat=[{k: (r2(v) if isinstance(v, float) else v) for k, v in x.items()} for x in s_all.get("nazorat", [])],
         oy_pul=oy_pul_json(rows_all, cfg, oy),
         oylar=[oy_pul_json(rows_all, cfg, m) for m in sorted({(r.get("sana") or "")[:7] for r in rows_all if r.get("sana")}, reverse=True)
                if not oy or m == oy],
@@ -646,9 +649,25 @@ async def api_vozvrat_excel(request):
         return web.json_response({"errors": ["Бот уланмаган"]}, status=503)
     cfg, rows, trs, s = await asyncio.to_thread(state)
     with tempfile.TemporaryDirectory() as td:
-        p = Path(td) / f"Vozvrat_berilgan_tovarlar_{dt.date.today():%Y-%m-%d}.xlsx"
+        p = Path(td) / f"Vozvrat_yigma_{dt.date.today():%Y-%m-%d}.xlsx"
         await asyncio.to_thread(N.write_vozvrat_tovarlar, str(p), rows, cfg)
-        await _send_doc(request["uid"], p, "↩️ Возврат ҳисобидан берилган товарлар (ҳар манба — алоҳида варақ)")
+        await _send_doc(request["uid"], p, "↩️ Возврат йиғмаси: ой × тур (берилди/қолди), фактуралар бўйича, возвратга кирмаганми, товарма-товар")
+    return web.json_response({"ok": True})
+
+
+async def api_oylar_excel(request):
+    """Ойлар бўйича берилган юк — Excel чатга. {oy: "2026-11"} ёки бўш — ҳамма ойлар."""
+    if TG_APP is None:
+        return web.json_response({"errors": ["Бот уланмаган"]}, status=503)
+    b = await request.json()
+    oy = (b.get("oy") or "")[:7] or None
+    cfg, rows, trs, s = await asyncio.to_thread(state)
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / f"Oylar_boyicha_yuk_{oy or 'hammasi'}_{dt.date.today():%Y-%m-%d}.xlsx"
+        oylar = await asyncio.to_thread(N.write_oylik_tovar, str(p), rows, cfg, oy)
+        if not oylar:
+            return web.json_response({"errors": ["Бу давр учун товар йўқ"]}, status=400)
+        await _send_doc(request["uid"], p, "📅 Ойлар бўйича берилган юк: " + ", ".join(f"{N.OYLAR[int(o[5:7])]} {o[:4]}" for o in oylar))
     return web.json_response({"ok": True})
 
 
@@ -1173,6 +1192,7 @@ def make_web():
     app.router.add_post("/api/fiks", api_fiks)
     app.router.add_get("/api/vozvrat/tovarlar", api_vozvrat_tovarlar)
     app.router.add_post("/api/vozvrat/excel", api_vozvrat_excel)
+    app.router.add_post("/api/oylar/excel", api_oylar_excel)
     app.router.add_post("/api/fiks/tahrir", api_fiks_tahrir)
     app.router.add_post("/api/vozvrat/tahrir", api_vozvrat_tahrir)
     app.router.add_post("/api/vozvrat/ochir", api_vozvrat_ochir)
@@ -1207,6 +1227,8 @@ async def start_cmd(update, ctx):
         "❌ Хатолар Excel да — /xatolar\n"
         "🔎 Фақат текшириш (ойлик, 15 кунлик, эски фактура) — /tekshir\n"
         "📅 Ой якуни: пуллар қанча ишлатилди, кейинги ойга қанча ўтди — /oy_yakuni\n"
+        "📑 Ойлар бўйича берилган юк Excel да — /oylar (битта ой: /oylar 2026-11)\n"
+        "↩️ Возврат йиғмаси (грамм ва сумма) — /yigma\n"
         "🧾 ҚҚС (НДС) текшируви: Gavhar қўйган ↔ қонун бўйича — /qqs\n"
         "⏸ Пулни текширувдан ўчириш / ёқиш — /pul_ochir 1, /pul_yoq 1\n"
         "🔒 Возврат қисмини якунлаш — /vozvrat_yop 2\n"
@@ -1228,7 +1250,8 @@ def make_bot():
     app.add_handler(CommandHandler("admin", B.admin))
     app.add_handler(CallbackQueryHandler(B.admin_cb, pattern="^ad_"))
     app.add_handler(CommandHandler("vozvrat", B.vozvrat))
-    app.add_handler(CommandHandler(["fiks", "fiksatsiya"], B.fiks_cmd))
+    app.add_handler(CommandHandler(["fiks", "fiksatsiya", "yigma"], B.fiks_cmd))
+    app.add_handler(CommandHandler(["oylar", "oylik_yuk"], B.oylar_cmd))
     app.add_handler(CommandHandler(["qayta", "qayta_tekshir"], B.qayta_cmd))
     app.add_handler(CommandHandler(["hammasi", "export"], B.hammasi_cmd))
     app.add_handler(CommandHandler("xatolar", B.xatolar_cmd))

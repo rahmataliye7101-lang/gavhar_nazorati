@@ -1262,38 +1262,61 @@ def looks_like_returns(path, name):
 
 def fiks_holat_matn(cfg=None):
     cfg = cfg or load_cfg()
-    nazorat.compute(cfg, nazorat.load_ledger(str(LEDGER)), nazorat.load_returns(str(VOZVRAT)))
-    L = ["📑 Возврат фиксацияси (тош тури бўйича қиймат):"]
+    rows, _ = nazorat.compute(cfg, nazorat.load_ledger(str(LEDGER)), nazorat.load_returns(str(VOZVRAT)))
+    L = nazorat.ob_hisob_matn(rows, cfg) + ["", "📑 ВОЗВРАТ ЙИҒМАСИ — ботдаги ҳамма фактуралар бўйича:"]
     for f in nazorat.fiks_stats(cfg):
-        L.append(f"\n{f['nom'].capitalize()}{' ⏸ ўчирилган' if not f['faol'] else ''}: {f['summa']:,.2f} $ · "
-                 f"ишлатилди {f['used']:,.2f} $ ({f['n']} та) · қолди {f['left']:,.2f} $")
+        L.append(f"\n{f['nom'].capitalize()}{' ⏸ ўчирилган' if not f['faol'] else ''}: {f['summa']:,.2f} $ / {f['gramm']:,.2f} гр · "
+                 f"берилди {f['used']:,.2f} $ / {f['g']:,.2f} гр ({f['n']} та) · қолди {f['left']:,.2f} $ / {f['gleft']:,.2f} гр")
         L += [f"   • {t}" for t in nazorat.fiks_tafsil(f, cfg.get("chegara_usd_gr", 0.3))]
     if len(L) == 1:
         L.append("ҳали киритилмаган")
-    L += ["", "Қандай ҳисобланади: пул (транш) нархига тушмаган товар — возврат. Фиксацияда у ўша тош турининг 1 гр нархида (сумма ÷ грамм) бўлиши керак, шунда қиймати ва грамми айирилади "
-          "(аввал сентябрь, кейин октябрь; товар санаси фиксация ойидан олдин бўлмаслиги керак). «Браслет Занжир» — билакузук ва занжирлар. "
-          "1 гр нархи шу турнинг энг юқори нархидан баланд бўлса — возврат ҳисобланмайди, хато чиқади.",
-          "", "Янгилаш: «Фиксация» сўзи, ой номи ва Gavhar жадвалини (Excel дан нусха) юборинг — шу ой қайта ёзилади.",
-          "Тартиб: аввал возврат 2-қисм (биржа 149.94 нархлари), кейин фиксация (тур бўйича 1 гр нархи = сумма ÷ грамм).",
-          "⏸ Excel возврат рўйхати (1-қисм) тўхтатилган (Admin → Tekshiruv sozlamasi да қайта ёқиш мумкин)."]
-    return "\n".join(L)
+    L = nazorat.fiks_nazorat_matn(rows, cfg) + [""] + L
+    yl = nazorat.vozvrat_yigma_matn(rows, cfg)
+    if yl:
+        L += [""] + yl
+    L += ["", "Қоида: товар аввал пул (транш) нархида текширилади; тушмаса — возврат фиксацияси. Билак узук ва занжир — «Браслет Занжир», "
+          "қолганлари тош тури бўйича (Ван Клиф — Дорика). Товар нархи энг яқин ой фиксациясига тушади ва унинг СУММАСИДАН айирилади; "
+          "фиксация тугаса — бошқа ойга ўтказилмайди, «⚠ возврат тугаган» бўлиб чиқади.",
+          "Excel: «Ой бошидан» (ҳар пул ва возвратдан қанча, ҳар фактура изоҳи билан), «Хулоса» (ой × тур), «Фактуралар бўйича», «Возвратга кирмаганми», «Нархи фарқли возврат» ва ҳар ой товарма-товар.",
+          "", "Янгилаш: «Фиксация» сўзи, ой номи ва Gavhar жадвалини (Excel дан нусха) юборинг — шу ой қайта ёзилади."]
+    return "\n".join(L), rows, cfg
+
+
+@need("hisobot")
+async def oylar_cmd(update: Update, ctx):
+    """/oylar — ойлар бўйича берилган юк Excel да. /oylar 2026-11 (ёки 11.2026) — фақат шу ой."""
+    a = " ".join(ctx.args or []).strip()
+    m = re.match(r"(\d{4})-(\d{1,2})", a) or re.match(r"(\d{1,2})[./](\d{4})", a)
+    oy = None
+    if m:
+        y, mo = (m.group(1), m.group(2)) if len(m.group(1)) == 4 else (m.group(2), m.group(1))
+        oy = f"{int(y):04d}-{int(mo):02d}"
+    cfg = load_cfg()
+    rows, _ = await asyncio.to_thread(nazorat.compute, cfg, nazorat.load_ledger(str(LEDGER)), nazorat.load_returns(str(VOZVRAT)))
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / f"Oylar_boyicha_yuk_{oy or 'hammasi'}_{dt.date.today():%Y-%m-%d}.xlsx"
+        oylar = await asyncio.to_thread(nazorat.write_oylik_tovar, str(p), rows, cfg, oy)
+        if not oylar:
+            return await update.message.reply_text("Бу давр учун товар йўқ.")
+        with open(p, "rb") as f:
+            await update.message.reply_document(f, filename=p.name, caption="📅 Ойлар бўйича берилган юк: " + ", ".join(
+                f"{nazorat.OYLAR[int(o[5:7])]} {o[:4]}" for o in oylar) + "\nВарақлар: Ойлар (қайси пул ва возвратдан), Ой × возврат (қайси фиксация ва тур), Ой × тур, Ой × дўкон, ҳар ой товарма-товар."
+                + ("" if oy else "\nБитта ой: /oylar 2026-11"))
 
 
 @need("holat")
 async def fiks_cmd(update: Update, ctx):
-    await send_long(update.message, fiks_holat_matn())
-    try:  # возврат ҳисобидан берилган товарлар — Excel (ҳар манба алоҳида варақ)
-        cfg = load_cfg()
-        rows, _ = nazorat.compute(cfg, nazorat.load_ledger(str(LEDGER)), nazorat.load_returns(str(VOZVRAT)))
+    matn, rows, cfg = await asyncio.to_thread(fiks_holat_matn)
+    await send_long(update.message, matn)
+    try:  # ВОЗВРАТ ЙИҒМАСИ — Excel
         with tempfile.TemporaryDirectory() as td:
-            p = Path(td) / f"Vozvrat_berilgan_tovarlar_{dt.date.today():%Y-%m-%d}.xlsx"
+            p = Path(td) / f"Vozvrat_yigma_{dt.date.today():%Y-%m-%d}.xlsx"
             n = await asyncio.to_thread(nazorat.write_vozvrat_tovarlar, str(p), rows, cfg)
-            if n:
-                with open(p, "rb") as f:
-                    await update.message.reply_document(f, filename=p.name, caption="↩️ Возвратдан берилган товарлар: " + ", ".join(
-                        f"{nazorat.qism_nom(q)} — {k} та" for q, k in n.items()))
+            with open(p, "rb") as f:
+                await update.message.reply_document(f, filename=p.name, caption="↩️ Возврат йиғмаси: " + (", ".join(
+                    f"{nazorat.qism_nom(q)} — {k} та" for q, k in n.items()) or "возвратдан ҳали товар берилмаган"))
     except Exception:
-        log.exception("vozvrat tovarlar")
+        log.exception("vozvrat yigma")
 
 
 async def fiks_matn(update: Update, ctx, text):
@@ -1322,7 +1345,7 @@ async def fiks_matn(update: Update, ctx, text):
                      + f" · жами {sum(x['summa'] for x in T.values()):,.2f} $")
         save_cfg(cfg)
     await update.message.reply_text("✅ Возврат фиксацияси сақланди:\n" + "\n".join(L) + "\n\nЖами жадвал суммаси Gavhar жадвалидаги «Жами» билан бир хилми — текширинг.")
-    await send_long(update.message, fiks_holat_matn())
+    await send_long(update.message, (await asyncio.to_thread(fiks_holat_matn))[0])
     return True
 
 
